@@ -4,7 +4,8 @@
 - `CONTRACT.md` : 프론트/백엔드 결과 스키마 계약
 - `TEAM_ROLES.md` : 팀별 Stage 담당
 - `HOW_TO_GIT.md` : Git 사용법 (main/sub)
+- `REPO_USAGE.md` : 레포 사용/폴더 안내
 - `ARCHITECTURE.md` : 시스템 구조 요약
 
 ## 사용 방법
-작업 전 반드시 `CONTRACT.md`와 `TEAM_ROLES.md` 확인.
+작업 전 반드시 `CONTRACT.md`, `TEAM_ROLES.md`, `REPO_USAGE.md` 확인.
