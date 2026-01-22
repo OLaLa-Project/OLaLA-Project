@@ -1,0 +1,47 @@
+version: "3.9"
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/olala
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: olala
+    ports:
+      - "5432:5432"
+    volumes:
+      - olala_pg:/var/lib/postgresql/data
+
+  # Optional: vLLM container for local SLM serving
+  # Uncomment and set HF_TOKEN if needed
+  # vllm:
+  #   image: vllm/vllm-openai:latest
+  #   ports:
+  #     - "8001:8001"
+  #   environment:
+  #     - HF_TOKEN=replace_me
+  #   volumes:
+  #     - ./mlops/models:/root/.cache/huggingface
+  #   gpus: all
+  #   command: >
+  #     vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ
+  #     --host 0.0.0.0
+  #     --port 8001
+  #     --served-model-name slm
+  #     --dtype auto
+  #     --max-model-len 4096
+  #     --quantization awq
+  #     --api-key local-slm-key
+  #     --trust-remote-code
+
+volumes:
+  olala_pg:
