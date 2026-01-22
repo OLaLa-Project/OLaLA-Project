@@ -1,0 +1,17 @@
+services:
+  backend:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+    environment:
+      PYTHONPATH: /app
+
+  web:
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+    depends_on:
+      - backend

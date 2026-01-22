@@ -26,3 +26,8 @@ checkpoints/
 
 # Logs
 *.log
+
+# Docker/Runtime
+storage/
+*.sqlite
+*.db

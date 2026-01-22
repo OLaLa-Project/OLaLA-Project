@@ -5,10 +5,12 @@ OLaLA는 멀티 에이전트 기반 가짜뉴스 판독 MVP입니다. 이 레포
 ## 빠른 시작 (로컬)
 1) `.env.example` → `.env` 복사 후 값 입력
 2) 실행: `docker compose up -d`
-3) 헬스체크: `http://localhost:8000/health`
+3) 백엔드 헬스체크: `http://localhost:8000/health`
+4) 웹 대시보드: `http://localhost:5173`
 
 ## 디렉토리 구조
 - `frontend/`  Flutter 모바일 앱
+- `web/`       React 웹 대시보드
 - `backend/`   FastAPI + Stage 파이프라인
 - `mlops/`     학습/평가/모델 설정
 - `shared/`    공통 스키마

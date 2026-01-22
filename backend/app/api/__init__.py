@@ -1,3 +1,3 @@
 # API Routers
 
-__all__ = ["health", "truth_check"]
+__all__ = ["health", "dashboard", "truth_check"]
