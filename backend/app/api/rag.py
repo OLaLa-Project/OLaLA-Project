@@ -4,7 +4,7 @@ from typing import Any, Generator, Optional
 import requests
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -17,12 +17,18 @@ router = APIRouter(prefix="/api")
 
 
 class WikiSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: Optional[str] = None
     question: str = Field(..., min_length=1)
     top_k: int = Field(8, ge=1, le=50)
     page_ids: Optional[list[int]] = None
     window: int = Field(2, ge=0, le=5)
     max_chars: int = Field(4200, ge=500, le=20000)
+    page_limit: int = Field(8, ge=1, le=50)
+    embed_missing: bool = False
 
+    page_limit: int = Field(8, ge=1, le=50)
+    embed_missing: bool = True
 
 class WikiSearchResponse(BaseModel):
     ok: bool
@@ -39,6 +45,8 @@ def wiki_search(req: WikiSearchRequest, db: Session = Depends(get_db)) -> JSONRe
         page_ids=req.page_ids,
         window=req.window,
         max_chars=req.max_chars,
+        page_limit=req.page_limit,
+        embed_missing=req.embed_missing,
     )
     return JSONResponse(
         WikiSearchResponse(
@@ -58,18 +66,23 @@ def wiki_rag_stream(req: WikiSearchRequest, db: Session = Depends(get_db)) -> St
         page_ids=req.page_ids,
         window=req.window,
         max_chars=req.max_chars,
+        page_limit=req.page_limit,
+        embed_missing=req.embed_missing,
     )
 
     prompt = (
-        "You are a fact-checking assistant.\n"
-        "Answer the question using only the provided context.\n\n"
-        f"Context:\n{pack['context']}\n\n"
-        f"Question: {req.question}\n"
-        "Answer:"
+        "너는 사실 검증 보조자다.\n"
+        "아래에 제공된 문맥만 사용해서 질문에 답하라.\n"
+        "문맥에 없는 내용은 추측하지 말고 '근거 없음'이라고 밝혀라.\n"
+        "답변은 반드시 한국어로 작성하라.\n\n"
+        f"문맥:\n{pack['context']}\n\n"
+        f"질문: {req.question}\n"
+        "답변:"
     )
 
+    model_name = (req.model or "").strip() or "gemma2:9b"
     ollama_payload = {
-        "model": "gemma2:9b",  # change to your default
+        "model": model_name,
         "prompt": prompt,
         "stream": True,
     }

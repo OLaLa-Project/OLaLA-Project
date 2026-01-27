@@ -25,6 +25,8 @@ class EvidenceBlock(BaseModel):
     snippet: str
     dist: Optional[float] = None
     lex_score: Optional[float] = None
+    title_score: Optional[float] = None
+    final_score: Optional[float] = None
 
 
 class WikiSearchResponse(BaseModel):

@@ -236,7 +236,8 @@ function DemoPage() {
   }
 
   async function streamRag(model: string, question: string, signal: AbortSignal) {
-    const res = await fetch(`${API_BASE}/api/rag-stream`, {
+    const pageIds = ragSearchResult?.candidates?.map((c) => c.page_id) || undefined;
+    const res = await fetch(`${API_BASE}/api/wiki/rag-stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -244,6 +245,7 @@ function DemoPage() {
         question,
         top_k: RAG_TOPK,
         max_chars: RAG_MAX_CHARS,
+        page_ids: pageIds,
       }),
       signal,
     });

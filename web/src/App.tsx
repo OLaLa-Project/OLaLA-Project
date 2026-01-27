@@ -34,7 +34,7 @@ function App() {
           <div className="brand">
             <div className="brand-mark">A</div>
             <div>
-              <div className="brand-title">LLM Demo</div>
+              <div className="brand-title">LLM RAG Demo</div>
               <div className="brand-sub">SLM sandbox for local Ollama</div>
             </div>
           </div>

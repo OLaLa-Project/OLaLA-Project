@@ -11,14 +11,16 @@ def retrieve_wiki_context(
     page_ids: Optional[list[int]] = None,
     window: int = 2,
     max_chars: int = 4200,
+    page_limit: int = 8,
+    embed_missing: bool = False,
 ) -> dict[str, Any]:
     pack = retrieve_wiki_hits(
         db,
         question=question,
         top_k=top_k,
         window=window,
-        page_limit=50,
-        embed_missing=False,
+        page_limit=page_limit,
+        embed_missing=embed_missing,
         max_chars=max_chars,
         page_ids=page_ids,
     )
