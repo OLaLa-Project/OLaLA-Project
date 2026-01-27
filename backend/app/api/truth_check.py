@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.schemas import TruthCheckRequest, TruthCheckResponse
 from app.db.session import get_db
-from app.db.repo import save_analysis
+from app.db.repos.analysis_repo import save_analysis
 from app.graph.graph import run_pipeline
 
 router = APIRouter()

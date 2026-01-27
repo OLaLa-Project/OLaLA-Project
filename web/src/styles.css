@@ -263,6 +263,116 @@ body {
   gap: 6px;
 }
 
+.team-stage {
+  margin-top: 26px;
+}
+
+.team-stage-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.team-stage-header h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.team-stage-header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.team-stage-grid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.team-stage-card {
+  background: var(--card);
+  border: 1px solid var(--stroke);
+  border-radius: 20px;
+  padding: 18px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 10px;
+}
+
+.team-stage-controls {
+  grid-column: 1 / -1;
+}
+
+.team-slot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.team-slot-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-slot-output {
+  min-height: 120px;
+}
+
+.team-slot-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.team-slot-meta span {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.team-slot-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.team-slot-metric {
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: white;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.team-slot-metric strong {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.team-slot-error {
+  font-size: 12px;
+  color: #b84c22;
+}
+
+.pill.status[data-state="idle"] {
+  background: rgba(34, 34, 34, 0.05);
+  color: var(--muted);
+  border-color: rgba(34, 34, 34, 0.12);
+}
+
+.pill.status[data-state="busy"] {
+  background: rgba(47, 109, 103, 0.18);
+  color: var(--accent-2);
+  border-color: rgba(47, 109, 103, 0.4);
+}
+
 @keyframes rise {
   0% {
     transform: translateY(10px);

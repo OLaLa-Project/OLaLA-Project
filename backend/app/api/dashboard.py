@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import socket
 import subprocess
 from typing import Any, Dict, Generator, Iterable, Optional
 
@@ -130,6 +131,41 @@ def _get_gpu_stats() -> Dict[str, Any]:
     }
 
 
+def _docker_ctl(action: str) -> Dict[str, Any]:
+    if action not in {"start", "stop"}:
+        return {"ok": False, "error": "invalid action"}
+    path = f"/containers/olala-ollama/{'start' if action == 'start' else 'stop'}"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(5)
+            sock.connect("/var/run/docker.sock")
+            req = f"POST {path} HTTP/1.1\r\nHost: docker\r\nContent-Length: 0\r\n\r\n"
+            sock.sendall(req.encode("utf-8"))
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if b"\r\n\r\n" in data:
+                    break
+    except FileNotFoundError:
+        return {"ok": False, "error": "docker socket not available"}
+    except socket.timeout:
+        return {"ok": False, "error": "docker socket timeout"}
+    except OSError as err:
+        return {"ok": False, "error": str(err)}
+
+    header, _, body = data.partition(b"\r\n\r\n")
+    status_line = header.splitlines()[0].decode("utf-8", "replace") if header else ""
+    parts = status_line.split()
+    status_code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+    if status_code in {204, 304}:
+        return {"ok": True}
+    message = body.decode("utf-8", "replace").strip()
+    return {"ok": False, "error": message or status_line or "docker api failed"}
+
+
 @router.get("/health")
 def api_health() -> JSONResponse:
     ok = True
@@ -152,6 +188,18 @@ def api_models() -> JSONResponse:
         resp = _proxy_json("GET", "/api/tags")
         if not resp.ok:
             return JSONResponse({"ok": False, "error": "ollama tags failed"}, status_code=502)
+        data = resp.json()
+        return JSONResponse({"ok": True, "models": data.get("models", [])})
+    except Exception as err:
+        return JSONResponse({"ok": False, "error": str(err)}, status_code=502)
+
+
+@router.get("/ps")
+def api_ps() -> JSONResponse:
+    try:
+        resp = _proxy_json("GET", "/api/ps")
+        if not resp.ok:
+            return JSONResponse({"ok": False, "error": "ollama ps failed"}, status_code=502)
         data = resp.json()
         return JSONResponse({"ok": True, "models": data.get("models", [])})
     except Exception as err:
@@ -238,6 +286,20 @@ async def api_warm(request: Request) -> JSONResponse:
         return JSONResponse({"ok": resp.ok})
     except Exception as err:
         return JSONResponse({"ok": False, "error": str(err)}, status_code=502)
+
+
+@router.post("/ollama/down")
+def api_ollama_down() -> JSONResponse:
+    data = _docker_ctl("stop")
+    status = 200 if data.get("ok") else 500
+    return JSONResponse(data, status_code=status)
+
+
+@router.post("/ollama/up")
+def api_ollama_up() -> JSONResponse:
+    data = _docker_ctl("start")
+    status = 200 if data.get("ok") else 500
+    return JSONResponse(data, status_code=status)
 
 
 @router.post("/rag-stream")

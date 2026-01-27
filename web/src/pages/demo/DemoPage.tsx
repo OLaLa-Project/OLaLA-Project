@@ -18,6 +18,27 @@ type Source = {
   snippet?: string | null;
 };
 
+type RagSearchCandidate = {
+  page_id: number;
+  title: string;
+};
+
+type RagSearchHit = {
+  title: string;
+  page_id: number;
+  chunk_id: number;
+  chunk_idx: number;
+  content: string;
+  snippet: string;
+  dist: number;
+};
+
+type RagSearchResult = {
+  question: string;
+  candidates: RagSearchCandidate[];
+  hits: RagSearchHit[];
+};
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
 const recommended = [
@@ -30,6 +51,9 @@ const recommended = [
 
 const RAG_TOPK = 6;
 const RAG_MAX_CHARS = 4200;
+const RAG_WINDOW = 2;
+const RAG_PAGE_LIMIT = 8;
+const RAG_EMBED_MISSING = true;
 
 function formatBytes(bytes: number | null | undefined) {
   if (bytes === null || bytes === undefined) return "--";
@@ -60,6 +84,45 @@ async function apiPost(path: string, payload: unknown) {
   return res.json();
 }
 
+async function fetchRagSearch(question: string): Promise<RagSearchResult> {
+  const data = await apiPost("/api/wiki/search", {
+    question,
+    top_k: RAG_TOPK,
+    window: RAG_WINDOW,
+    page_limit: RAG_PAGE_LIMIT,
+    embed_missing: RAG_EMBED_MISSING,
+  });
+
+  if (Array.isArray(data?.candidates) && Array.isArray(data?.hits)) {
+    return {
+      question: data.question ?? question,
+      candidates: data.candidates,
+      hits: data.hits,
+    };
+  }
+
+  const sources = Array.isArray(data?.sources) ? data.sources : [];
+  const candidates = sources.map((s) => ({
+    page_id: s.page_id,
+    title: s.title,
+  }));
+  const hits = sources.map((s) => ({
+    title: s.title,
+    page_id: s.page_id,
+    chunk_id: s.chunk_id ?? 0,
+    chunk_idx: s.chunk_idx ?? 0,
+    content: s.snippet || "",
+    snippet: s.snippet || "",
+    dist: typeof s.dist === "number" ? s.dist : 0,
+  }));
+
+  return {
+    question: data.question ?? question,
+    candidates,
+    hits,
+  };
+}
+
 function DemoPage() {
   const [statusOk, setStatusOk] = useState(false);
   const [version, setVersion] = useState("-");
@@ -75,11 +138,14 @@ function DemoPage() {
   const [activeModel, setActiveModel] = useState("");
   const [pullInput, setPullInput] = useState("");
   const [pullStatus, setPullStatus] = useState("");
+  const [ollamaStatus, setOllamaStatus] = useState("");
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
   const [sources, setSources] = useState<Source[]>([]);
   const [ragMeta, setRagMeta] = useState<any>(null);
   const [useRag, setUseRag] = useState(true);
+  const [ragSearchResult, setRagSearchResult] = useState<RagSearchResult | null>(null);
+  const [lastPrompt, setLastPrompt] = useState("");
   const [streaming, setStreaming] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
 
@@ -150,6 +216,18 @@ function DemoPage() {
     await loadMetrics();
     if (ok) {
       await loadModels();
+    }
+  }
+
+  async function setOllamaState(action: "up" | "down") {
+    setOllamaStatus(`${action === "up" ? "Starting" : "Stopping"} Ollama...`);
+    try {
+      await apiPost(`/api/ollama/${action}`, {});
+      await loadHealth();
+      await loadMetrics();
+      setOllamaStatus(`Ollama ${action === "up" ? "started" : "stopped"}`);
+    } catch (err: any) {
+      setOllamaStatus(`Ollama ${action} failed: ${err.message}`);
     }
   }
 
@@ -269,8 +347,16 @@ function DemoPage() {
     setSources([]);
     setRagMeta(useRag ? null : { mode: "disabled", hits: 0 });
     setStreaming(true);
+    setLastPrompt(question);
+    setRagSearchResult(null);
     try {
       if (useRag) {
+        try {
+          const searchResult = await fetchRagSearch(question);
+          setRagSearchResult(searchResult);
+        } catch (err) {
+          setRagSearchResult(null);
+        }
         await streamRag(model, question, controllerRef.current.signal);
       } else {
         await streamGenerate(model, question, controllerRef.current.signal);
@@ -408,14 +494,14 @@ function DemoPage() {
         <div className="metric-note">{statusOk ? "Online" : "Offline"}</div>
         <div className="metric-note">{version}</div>
         <div className="row">
-          <button className="pill ghost" disabled>
+          <button className="pill ghost" onClick={() => setOllamaState("down")}>
             Ollama down
           </button>
-          <button className="pill ghost" disabled>
+          <button className="pill ghost" onClick={() => setOllamaState("up")}>
             Ollama up
           </button>
         </div>
-        <div className="hint">per-process view later</div>
+        <div className="hint">{ollamaStatus || "per-process view later"}</div>
       </section>
 
       <section className="card metric-card">
@@ -607,6 +693,58 @@ function DemoPage() {
             <div className="hint">RAG is off</div>
           )}
         </div>
+        <section className="card rag-search">
+          <div className="card-head">
+            <h3>RAG DB Search</h3>
+            <div className="hint">Prompt used: {lastPrompt || "-"}</div>
+          </div>
+          {useRag ? (
+            ragSearchResult ? (
+              <>
+                <div className="label">Question</div>
+                <div className="hint">{ragSearchResult.question}</div>
+                <div className="label">Candidates</div>
+                <div className="sources">
+                  {(ragSearchResult?.candidates?.length ?? 0) ? (
+                    (ragSearchResult?.candidates ?? []).map((c) => (
+                      <div className="source-item" key={`candidate-${c.page_id}`}>
+                        <div className="source-title">{c.title}</div>
+                        <div className="source-meta">page {c.page_id}</div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="hint">No candidates found</div>
+                  )}
+                </div>
+                <div className="label">Hits</div>
+                <div className="sources">
+                  {(ragSearchResult?.hits?.length ?? 0) ? (
+                    (ragSearchResult?.hits ?? []).map((hit) => (
+                      <div className="source-item" key={`hit-${hit.page_id}-${hit.chunk_id}`}>
+                        <div className="source-title">
+                          {hit.title} | chunk {hit.chunk_idx}
+                        </div>
+                        <div className="source-meta">
+                          page {hit.page_id} | dist {hit.dist.toFixed(4)}
+                        </div>
+                        <div className="source-snippet">{hit.snippet}</div>
+                        <div className="source-snippet" style={{ whiteSpace: "pre-wrap" }}>
+                          {hit.content}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="hint">No hits returned</div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="hint">Search data will appear after the next RAG query</div>
+            )
+          ) : (
+            <div className="hint">Enable RAG to start database retrieval</div>
+          )}
+        </section>
         <div className="rag-log">
           {useRag ? (
             ragMeta ? (

@@ -3,7 +3,7 @@
 ## Members
 - 이윤호
 - 성세빈
-
+- 이은지
 ## Scope
 Stage 1~5
 
