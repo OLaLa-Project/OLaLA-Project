@@ -1,76 +1,88 @@
 services:
-  # ==========================================================================
-  # API Server (FastAPI)
-  # ==========================================================================
-  api:
-    build: ./backend
-    ports:
-      - "8000:8000"
-    env_file:
-      - ./.env
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/olala
-    depends_on:
-      - db
-
-  # ==========================================================================
-  # PostgreSQL Database
-  # ==========================================================================
   db:
-    image: postgres:15
+    image: pgvector/pgvector:pg17
+    container_name: olala-db
+    restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: olala
+      POSTGRES_DB: ${POSTGRES_DB:-olala}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
     volumes:
-      - olala_pg:/var/lib/postgresql/data
+      - ./storage/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-olala}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
-  # ==========================================================================
-  # Ollama (선택) — 호스트 Ollama 대신 컨테이너로 띄우고 싶을 때만 사용
-  #   docker compose --profile ollama up -d
-  # ==========================================================================
   ollama:
-    image: ollama/ollama
+    image: ollama/ollama:latest
+    container_name: olala-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
     ports:
       - "11434:11434"
     volumes:
-      - ollama_data:/root/.ollama
-    profiles:
-      - ollama
+      - ./storage/ollama:/root/.ollama
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
-  # ==========================================================================
-  # SLM2 Test Runner (Stage 6-8)
-  # 호스트 Ollama → host.docker.internal:11434 로 연결
-  #
-  # 사용법:
-  #   docker compose --profile test run --rm slm2-test
-  #   docker compose --profile test run --rm -e CASE=2 slm2-test
-  #   docker compose --profile test run --rm -e ALL=1 slm2-test
-  # ==========================================================================
-  slm2-test:
-    image: python:3.11-slim
-    volumes:
-      - ./backend:/work
-    working_dir: /work
-    env_file:
-      - ./.env
+  backend:
+    build:
+      context: ./backend
+    container_name: olala-backend
+    restart: unless-stopped
+    env_file: .env
     environment:
-      - PYTHONPATH=/work
-    entrypoint: ["sh", "-lc"]
-    command:
-      - |
-        pip install -q -r requirements.txt &&
-        if [ "$${ALL:-0}" = "1" ]; then
-          python -m tests.demo_slm2_pipeline --all;
-        elif [ -n "$${CASE:-}" ]; then
-          python -m tests.demo_slm2_pipeline --case "$${CASE}";
-        else
-          python -m tests.demo_slm2_pipeline --case 1;
-        fi
-    profiles:
-      - test
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-olala}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-olala}
+      OLLAMA_URL: http://ollama:11434
+      LOG_DIR: /app/logs
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage/logs/backend:/app/logs
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
-volumes:
-  olala_pg:
-  ollama_data:
+  web:
+    build:
+      context: ./web
+    container_name: olala-web
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
