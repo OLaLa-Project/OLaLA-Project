@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   # ==========================================================================
   # API Server (FastAPI)
@@ -11,11 +10,8 @@ services:
       - ./.env
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/olala
-      # SLM 기본값 (env_file이 우선 적용됨)
-      - SLM_BASE_URL=http://ollama:11434/v1
     depends_on:
       - db
-      - ollama
 
   # ==========================================================================
   # PostgreSQL Database
@@ -31,7 +27,8 @@ services:
       - olala_pg:/var/lib/postgresql/data
 
   # ==========================================================================
-  # Ollama - Local LLM Server (OpenAI-compatible)
+  # Ollama (선택) — 호스트 Ollama 대신 컨테이너로 띄우고 싶을 때만 사용
+  #   docker compose --profile ollama up -d
   # ==========================================================================
   ollama:
     image: ollama/ollama
@@ -39,10 +36,17 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    profiles:
+      - ollama
 
   # ==========================================================================
-  # SLM2 Test Runner (Stage 6-8 테스트 전용)
-  # 사용법: docker compose run --rm slm2-test --case 1
+  # SLM2 Test Runner (Stage 6-8)
+  # 호스트 Ollama → host.docker.internal:11434 로 연결
+  #
+  # 사용법:
+  #   docker compose --profile test run --rm slm2-test
+  #   docker compose --profile test run --rm -e CASE=2 slm2-test
+  #   docker compose --profile test run --rm -e ALL=1 slm2-test
   # ==========================================================================
   slm2-test:
     image: python:3.11-slim
@@ -52,44 +56,20 @@ services:
     env_file:
       - ./.env
     environment:
-      - SLM_BASE_URL=http://ollama:11434/v1
       - PYTHONPATH=/work
-    depends_on:
-      - ollama
-    entrypoint: ["sh", "-c"]
-    command: ["pip install -q -r requirements.txt && python -m tests.demo_slm2_pipeline $@", "--"]
+    entrypoint: ["sh", "-lc"]
+    command:
+      - |
+        pip install -q -r requirements.txt &&
+        if [ "$${ALL:-0}" = "1" ]; then
+          python -m tests.demo_slm2_pipeline --all;
+        elif [ -n "$${CASE:-}" ]; then
+          python -m tests.demo_slm2_pipeline --case "$${CASE}";
+        else
+          python -m tests.demo_slm2_pipeline --case 1;
+        fi
     profiles:
       - test
-
-  # ==========================================================================
-  # Optional: vLLM container for GPU-accelerated SLM serving
-  # GPU 환경에서만 사용 가능. 주석 해제 후 HF_TOKEN 설정 필요
-  # ==========================================================================
-  # vllm:
-  #   image: vllm/vllm-openai:latest
-  #   ports:
-  #     - "8001:8001"
-  #   environment:
-  #     - HF_TOKEN=replace_me
-  #   volumes:
-  #     - ./mlops/models:/root/.cache/huggingface
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: all
-  #             capabilities: [gpu]
-  #   command: >
-  #     vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ
-  #     --host 0.0.0.0
-  #     --port 8001
-  #     --served-model-name slm
-  #     --dtype auto
-  #     --max-model-len 4096
-  #     --quantization awq
-  #     --api-key local-slm-key
-  #     --trust-remote-code
 
 volumes:
   olala_pg:

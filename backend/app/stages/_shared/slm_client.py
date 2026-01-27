@@ -1,12 +1,13 @@
 """
-SLM Client for OpenAI-compatible API (vLLM, Ollama 등).
+SLM Client for OpenAI-compatible API (Ollama, vLLM 등).
 
 환경변수:
     SLM_BASE_URL: SLM 서버 주소 (default: http://localhost:8001/v1)
-                  - Ollama: http://ollama:11434/v1
+                  - 호스트 Ollama (Docker→호스트): http://host.docker.internal:11434/v1
+                  - 로컬 직접 실행: http://localhost:11434/v1
                   - vLLM: http://localhost:8001/v1
     SLM_API_KEY: API 키 (default: local-slm-key, Ollama는 "ollama")
-    SLM_MODEL: 모델명 (default: slm, Ollama 예: llama3.2)
+    SLM_MODEL: 모델명 (default: slm, Ollama 예: gemma3:4b)
     SLM_TIMEOUT_SECONDS: 타임아웃 (default: 60)
     SLM_MAX_TOKENS: 최대 토큰 (default: 768)
     SLM_TEMPERATURE: 온도 (default: 0.1)
@@ -46,7 +47,7 @@ class SLMConfig:
 
 
 class SLMClient:
-    """vLLM OpenAI-compatible API 클라이언트."""
+    """OpenAI-compatible API 클라이언트 (Ollama, vLLM 등)."""
 
     def __init__(self, config: Optional[SLMConfig] = None):
         self.config = config or SLMConfig.from_env()
