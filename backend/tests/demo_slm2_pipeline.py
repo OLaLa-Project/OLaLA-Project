@@ -1,21 +1,26 @@
 """
 SLM2 파이프라인 데모 스크립트.
 
-실제 vLLM 서버를 사용하여 Stage 6-8 파이프라인을 테스트합니다.
+OpenAI-compatible SLM 서버(vLLM 또는 Ollama)를 사용하여 Stage 6-8 파이프라인을 테스트합니다.
 
 실행 전 준비:
-1. vLLM 서버 실행 (docker-compose 또는 직접 실행)
-2. 환경변수 설정 (선택):
-   - SLM_BASE_URL (default: http://localhost:8001/v1)
-   - SLM_API_KEY (default: local-slm-key)
-   - SLM_MODEL (default: slm)
+1. SLM 서버 실행:
+   - Ollama: docker compose up -d ollama && docker exec olala-project-ollama-1 ollama pull llama3.2
+   - vLLM: docker-compose에서 vllm 서비스 주석 해제 후 실행
+2. 환경변수 설정 (.env 파일 또는 직접 export):
+   - SLM_BASE_URL: Ollama는 http://ollama:11434/v1, vLLM은 http://localhost:8001/v1
+   - SLM_API_KEY: Ollama는 "ollama", vLLM은 "local-slm-key"
+   - SLM_MODEL: Ollama 예시 "llama3.2", vLLM 예시 "slm"
 
-실행 방법:
+실행 방법 (로컬):
     cd backend
     python -m tests.demo_slm2_pipeline
-
-    # 또는 특정 테스트 케이스만
     python -m tests.demo_slm2_pipeline --case 1
+
+실행 방법 (Docker):
+    docker compose run --rm slm2-test
+    docker compose run --rm slm2-test --case 1
+    docker compose run --rm slm2-test --all
 """
 
 import sys

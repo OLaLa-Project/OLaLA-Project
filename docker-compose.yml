@@ -1,88 +1,96 @@
+version: "3.9"
 services:
-  db:
-    image: pgvector/pgvector:pg17
-    container_name: olala-db
-    restart: unless-stopped
-    env_file: .env
+  # ==========================================================================
+  # API Server (FastAPI)
+  # ==========================================================================
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-olala}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      PGDATA: /var/lib/postgresql/data/pgdata
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/olala
+      # SLM 기본값 (env_file이 우선 적용됨)
+      - SLM_BASE_URL=http://ollama:11434/v1
+    depends_on:
+      - db
+      - ollama
+
+  # ==========================================================================
+  # PostgreSQL Database
+  # ==========================================================================
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: olala
     ports:
       - "5432:5432"
     volumes:
-      - ./storage/pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-olala}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+      - olala_pg:/var/lib/postgresql/data
 
+  # ==========================================================================
+  # Ollama - Local LLM Server (OpenAI-compatible)
+  # ==========================================================================
   ollama:
-    image: ollama/ollama:latest
-    container_name: olala-ollama
-    restart: unless-stopped
-    environment:
-      OLLAMA_HOST: 0.0.0.0:11434
+    image: ollama/ollama
     ports:
       - "11434:11434"
     volumes:
-      - ./storage/ollama:/root/.ollama
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+      - ollama_data:/root/.ollama
 
-  backend:
-    build:
-      context: ./backend
-    container_name: olala-backend
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: ${POSTGRES_DB:-olala}
-      DB_USER: ${POSTGRES_USER:-postgres}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-olala}
-      OLLAMA_URL: http://ollama:11434
-      LOG_DIR: /app/logs
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    ports:
-      - "8000:8000"
+  # ==========================================================================
+  # SLM2 Test Runner (Stage 6-8 테스트 전용)
+  # 사용법: docker compose run --rm slm2-test --case 1
+  # ==========================================================================
+  slm2-test:
+    image: python:3.11-slim
     volumes:
-      - ./storage/logs/backend:/app/logs
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ./backend:/work
+    working_dir: /work
+    env_file:
+      - ./.env
+    environment:
+      - SLM_BASE_URL=http://ollama:11434/v1
+      - PYTHONPATH=/work
     depends_on:
-      db:
-        condition: service_healthy
-      ollama:
-        condition: service_started
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+      - ollama
+    entrypoint: ["sh", "-c"]
+    command: ["pip install -q -r requirements.txt && python -m tests.demo_slm2_pipeline $@", "--"]
+    profiles:
+      - test
 
-  web:
-    build:
-      context: ./web
-    container_name: olala-web
-    restart: unless-stopped
-    ports:
-      - "5173:5173"
-    depends_on:
-      - backend
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+  # ==========================================================================
+  # Optional: vLLM container for GPU-accelerated SLM serving
+  # GPU 환경에서만 사용 가능. 주석 해제 후 HF_TOKEN 설정 필요
+  # ==========================================================================
+  # vllm:
+  #   image: vllm/vllm-openai:latest
+  #   ports:
+  #     - "8001:8001"
+  #   environment:
+  #     - HF_TOKEN=replace_me
+  #   volumes:
+  #     - ./mlops/models:/root/.cache/huggingface
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   command: >
+  #     vllm serve Qwen/Qwen2.5-7B-Instruct-AWQ
+  #     --host 0.0.0.0
+  #     --port 8001
+  #     --served-model-name slm
+  #     --dtype auto
+  #     --max-model-len 4096
+  #     --quantization awq
+  #     --api-key local-slm-key
+  #     --trust-remote-code
+
+volumes:
+  olala_pg:
+  ollama_data:

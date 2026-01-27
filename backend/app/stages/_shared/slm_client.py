@@ -1,10 +1,12 @@
 """
-SLM Client for vLLM OpenAI-compatible API.
+SLM Client for OpenAI-compatible API (vLLM, Ollama 등).
 
 환경변수:
-    SLM_BASE_URL: vLLM 서버 주소 (default: http://localhost:8001/v1)
-    SLM_API_KEY: API 키 (default: local-slm-key)
-    SLM_MODEL: 모델명 (default: slm)
+    SLM_BASE_URL: SLM 서버 주소 (default: http://localhost:8001/v1)
+                  - Ollama: http://ollama:11434/v1
+                  - vLLM: http://localhost:8001/v1
+    SLM_API_KEY: API 키 (default: local-slm-key, Ollama는 "ollama")
+    SLM_MODEL: 모델명 (default: slm, Ollama 예: llama3.2)
     SLM_TIMEOUT_SECONDS: 타임아웃 (default: 60)
     SLM_MAX_TOKENS: 최대 토큰 (default: 768)
     SLM_TEMPERATURE: 온도 (default: 0.1)
@@ -71,7 +73,7 @@ class SLMClient:
         Raises:
             SLMError: API 호출 실패 시
         """
-        url = f"{self.config.base_url}/chat/completions"
+        url = f"{self.config.base_url.rstrip('/')}/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}",
