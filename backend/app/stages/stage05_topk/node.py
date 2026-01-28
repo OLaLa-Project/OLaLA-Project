@@ -45,6 +45,8 @@ def run(state: dict) -> dict:
 
     # Update State
     state["citations"] = citations
+    state["evidence_topk"] = citations
+
     
     # Check if 'Unverified' condition met (No citations)
     if not citations:
