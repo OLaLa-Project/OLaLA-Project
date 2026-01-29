@@ -1,34 +1,21 @@
 # backend/app/api/rag.py
 import json
-from typing import Any, Generator, Optional
+import os
+from typing import Any, Generator
 import requests
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.core.wiki_schemas import WikiSearchRequest
 from app.services.wiki_rag import retrieve_wiki_context
 
-OLLAMA_URL = "http://ollama:11434"
-OLLAMA_TIMEOUT = 60.0
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434").rstrip("/")
+OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
 
 router = APIRouter(prefix="/api")
-
-
-class WikiSearchRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    model: Optional[str] = None
-    question: str = Field(..., min_length=1)
-    top_k: int = Field(8, ge=1, le=50)
-    page_ids: Optional[list[int]] = None
-    window: int = Field(2, ge=0, le=5)
-    max_chars: int = Field(4200, ge=500, le=20000)
-    page_limit: int = Field(8, ge=1, le=50)
-    embed_missing: bool = False
-
-    page_limit: int = Field(8, ge=1, le=50)
-    embed_missing: bool = True
 
 class WikiSearchResponse(BaseModel):
     ok: bool
@@ -47,6 +34,7 @@ def wiki_search(req: WikiSearchRequest, db: Session = Depends(get_db)) -> JSONRe
         max_chars=req.max_chars,
         page_limit=req.page_limit,
         embed_missing=req.embed_missing,
+        search_mode=req.search_mode,
     )
     return JSONResponse(
         WikiSearchResponse(
@@ -68,6 +56,7 @@ def wiki_rag_stream(req: WikiSearchRequest, db: Session = Depends(get_db)) -> St
         max_chars=req.max_chars,
         page_limit=req.page_limit,
         embed_missing=req.embed_missing,
+        search_mode=req.search_mode,
     )
 
     prompt = (
@@ -91,7 +80,11 @@ def wiki_rag_stream(req: WikiSearchRequest, db: Session = Depends(get_db)) -> St
         meta = {
             "type": "sources",
             "sources": pack["sources"],
-            "meta": {"hits": len(pack["sources"])},
+            "meta": {
+                "hits": len(pack["sources"]),
+                "search_mode": req.search_mode,
+                "lexical_mode": (pack.get("debug") or {}).get("lexical_mode"),
+            },
         }
         yield json.dumps(meta).encode("utf-8") + b"\n"
 

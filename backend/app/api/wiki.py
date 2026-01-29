@@ -20,6 +20,9 @@ def wiki_search(req: WikiSearchRequest, db: Session = Depends(get_db)):
         window=req.window,
         page_limit=req.page_limit,
         embed_missing=req.embed_missing,
+        max_chars=req.max_chars,
+        page_ids=req.page_ids,
+        search_mode=req.search_mode,
     )
     return {
         "question": req.question,
@@ -27,6 +30,7 @@ def wiki_search(req: WikiSearchRequest, db: Session = Depends(get_db)):
         "hits": data["hits"],
         "updated_embeddings": data.get("updated_embeddings"),
         "debug": data.get("debug"),
+        "prompt_context": data.get("prompt_context"),
     }
 
 

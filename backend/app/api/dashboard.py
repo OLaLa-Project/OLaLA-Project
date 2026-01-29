@@ -6,19 +6,153 @@ import subprocess
 from typing import Any, Dict, Generator, Iterable, Optional
 
 import requests
-from fastapi import APIRouter, Request
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 try:
     import psutil  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
     psutil = None
 
+from app.db.session import get_db, SessionLocal
+from app.services.wiki_retriever import retrieve_wiki_hits
 
 router = APIRouter(prefix="/api")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434").rstrip("/")
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
+NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
+NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
+
+
+class TeamAQueryGenRequest(BaseModel):
+    model: Optional[str] = None
+    user_request: str = ""
+    title: str = ""
+    article_text: str = Field(..., min_length=1)
+    prompt: Optional[str] = None
+
+
+class TeamAQueryGenResponse(BaseModel):
+    ok: bool
+    model: str
+    prompt: str
+    raw: str
+    json: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class TeamARetrieveRequest(BaseModel):
+    claims: list[Dict[str, Any]]
+    top_k: int = Field(6, ge=1, le=20)
+    page_limit: int = Field(8, ge=1, le=50)
+    window: int = Field(2, ge=0, le=5)
+    max_chars: int = Field(2000, ge=200, le=20000)
+    embed_missing: bool = True
+    search_mode: str = "fts"
+    news_display: int = Field(5, ge=1, le=20)
+
+
+def _build_team_a_prompt(user_request: str, title: str, article_text: str) -> str:
+    return (
+        "너는 단순 요약기가 아니라, 기사 속 의도/논란의 소지를 파헤치는 ‘수석 팩트체커 + QueryGen(Stage2)’이다.\n"
+        "입력으로 주어진 title과 [SENTENCES]를 바탕으로,\n"
+        "(1) 기사 주제와 core_narrative를 작성하고,\n"
+        "(2) 검증이 필요한 핵심 claims 3개를 [SENTENCES]에서 “문장 그대로” 선택하며,\n"
+        "(3) 각 claim마다 verification_reason, time_sensitivity, 그리고 위키피디아 로컬 DB 조회용 쿼리(wiki_db)와 최신 뉴스 검색용 쿼리(news_search)를 생성하라.\n\n"
+        "[절대 규칙]\n"
+        "1) 출력은 오직 “유효한 JSON”만 허용한다. 마크다운, 주석, 코드펜스(```)를 절대 포함하지 마라.\n"
+        "2) 아래 [SENTENCES]는 article_text를 문장 단위로 분해한 것이다.\n"
+        "3) claims[].주장 값은 반드시 [SENTENCES]의 문장 텍스트를 “완전히 동일하게” 그대로 복사해야 한다.\n"
+        "   - 글자 하나라도 바꾸면 실패다(띄어쓰기/따옴표/조사/숫자 포함).\n"
+        "   - 문장 일부만 발췌하지 말고, 반드시 ‘한 문장 전체’를 그대로 사용해라.\n"
+        "4) claims는 정확히 3개만 출력한다. claim_id는 C1, C2, C3 고정.\n"
+        "5) claim_type은 반드시 아래 중 하나로만 선택한다:\n"
+        "   - 사건 | 논리 | 통계 | 인용 | 정책\n"
+        "6) verification_reason는 “왜 이 문장이 핵심 논점/논란 포인트인지”를 맥락적으로 설명하되, 기사 밖의 새로운 사실을 만들어내지 마라.\n"
+        "7) time_sensitivity는 low|mid|high 중 하나로 지정한다.\n"
+        "   - high: 최신 논란/팬 반응/시즌 전망/최근 발언 등 시점 영향이 큰 것\n"
+        "   - low: 인물/팀/리그/제도처럼 시간 영향이 적은 것\n"
+        "8) query_pack 생성 규칙:\n"
+        "   8-1) wiki_db: 정확히 3개를 생성한다. 각 원소는 {\"mode\":\"title|fulltext\",\"q\":\"string\"} 형식의 객체다.\n"
+        "        - 목적: ‘검증’이 아니라 로컬 위키에서 배경/정의/고정 사실(인물·팀·리그·대회·제도)을 찾기 위함.\n"
+        "        - title은 실제 문서 제목으로 존재할 가능성이 높은 엔터티(인물/팀/리그/대회/제도)를 우선한다.\n"
+        "        - fulltext는 개념/동의어/표기 변형을 포함해 검색 폭을 넓힌다.\n"
+        "        - 한국어 타이틀을 우선하고, 영문 표기는 필요 시 fulltext에 보조로 넣어라.\n"
+        "        - 이 기사처럼 위키 검증이 불필요한 claim이어도 wiki_db는 “배경 확보용”으로만 최소한으로 구성해라(예: 인물/팀/리그).\n"
+        "   8-2) news_search: 각 claim마다 정확히 4개 “문자열”을 생성한다. (객체/딕셔너리 금지)\n"
+        "        - 구성: (진위/공식 확인용 2개) + (반대/비교 데이터 탐색용 2개)\n"
+        "        - 필요 시 연도/시점, 공식 출처 키워드(구단 발표, KBO 공식 기록, 인터뷰 원문 등)를 포함한다.\n"
+        "9) JSON 스키마를 반드시 지켜라.\n\n"
+        "[출력 스키마]\n"
+        "{\n"
+        "  \"주제\": \"string\",\n"
+        "  \"core_narrative\": \"string\",\n"
+        "  \"claims\": [\n"
+        "    {\n"
+        "      \"claim_id\": \"C1\",\n"
+        "      \"주장\": \"string\",\n"
+        "      \"claim_type\": \"사건|논리|통계|인용|정책\",\n"
+        "      \"verification_reason\": \"string\",\n"
+        "      \"time_sensitivity\": \"low|mid|high\",\n"
+        "      \"query_pack\": {\n"
+        "        \"wiki_db\": [\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"}\n"
+        "        ],\n"
+        "        \"news_search\": [\"string\",\"string\",\"string\",\"string\"]\n"
+        "      }\n"
+        "    },\n"
+        "    {\n"
+        "      \"claim_id\": \"C2\",\n"
+        "      \"주장\": \"string\",\n"
+        "      \"claim_type\": \"사건|논리|통계|인용|정책\",\n"
+        "      \"verification_reason\": \"string\",\n"
+        "      \"time_sensitivity\": \"low|mid|high\",\n"
+        "      \"query_pack\": {\n"
+        "        \"wiki_db\": [\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"}\n"
+        "        ],\n"
+        "        \"news_search\": [\"string\",\"string\",\"string\",\"string\"]\n"
+        "      }\n"
+        "    },\n"
+        "    {\n"
+        "      \"claim_id\": \"C3\",\n"
+        "      \"주장\": \"string\",\n"
+        "      \"claim_type\": \"사건|논리|통계|인용|정책\",\n"
+        "      \"verification_reason\": \"string\",\n"
+        "      \"time_sensitivity\": \"low|mid|high\",\n"
+        "      \"query_pack\": {\n"
+        "        \"wiki_db\": [\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n"
+        "          {\"mode\":\"title|fulltext\",\"q\":\"string\"}\n"
+        "        ],\n"
+        "        \"news_search\": [\"string\",\"string\",\"string\",\"string\"]\n"
+        "      }\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "[INPUT]\n"
+        f"user_request: \"{user_request}\"\n"
+        f"title: \"{title}\"\n"
+        "SENTENCES:\n"
+        f"{article_text}\n"
+        "[/INPUT]\n\n"
+        "[최종 점검(출력 금지)]\n"
+        "- JSON만 출력했는가? (첫 글자 {, 마지막 글자 })\n"
+        "- claims 3개인가? claim_id가 C1~C3인가?\n"
+        "- 각 주장 문장이 [SENTENCES] 중 하나와 완전히 동일한가?\n"
+        "- news_search가 문자열 4개인가? (객체 금지)\n"
+        "- wiki_db가 객체 3개인가? mode가 title|fulltext 중 하나인가?\n\n"
+        "이제 JSON만 출력하라.\n"
+    )
 
 
 def _proxy_json(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> requests.Response:
@@ -38,6 +172,36 @@ def _stream_ollama(path: str, payload: Dict[str, Any]) -> Iterable[bytes]:
         for line in resp.iter_lines():
             if line:
                 yield line + b"\n"
+
+
+def _naver_news_search(query: str, display: int = 5) -> Dict[str, Any]:
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+        return {"query": query, "items": [], "error": "naver credentials missing"}
+    url = "https://openapi.naver.com/v1/search/news.json"
+    headers = {
+        "X-Naver-Client-Id": NAVER_CLIENT_ID,
+        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
+    }
+    params = {"query": query, "display": display, "sort": "date"}
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        if not resp.ok:
+            return {"query": query, "items": [], "error": f"naver http {resp.status_code}"}
+        data = resp.json()
+        items = []
+        for item in data.get("items", []):
+            items.append(
+                {
+                    "title": item.get("title"),
+                    "link": item.get("link"),
+                    "originallink": item.get("originallink"),
+                    "pubDate": item.get("pubDate"),
+                    "description": item.get("description"),
+                }
+            )
+        return {"query": query, "items": items, "error": None}
+    except Exception as err:
+        return {"query": query, "items": [], "error": str(err)}
 
 
 def _get_system_stats() -> Dict[str, Any]:
@@ -164,6 +328,131 @@ def _docker_ctl(action: str) -> Dict[str, Any]:
         return {"ok": True}
     message = body.decode("utf-8", "replace").strip()
     return {"ok": False, "error": message or status_line or "docker api failed"}
+
+
+@router.post("/team-a/querygen")
+def team_a_querygen(req: TeamAQueryGenRequest) -> JSONResponse:
+    model = (req.model or "").strip() or "gemma2:2b"
+    prompt = req.prompt or _build_team_a_prompt(req.user_request, req.title, req.article_text)
+    try:
+        resp = _proxy_json(
+            "POST",
+            "/api/generate",
+            {"model": model, "prompt": prompt, "stream": False},
+        )
+        if not resp.ok:
+            return JSONResponse(
+                TeamAQueryGenResponse(
+                    ok=False,
+                    model=model,
+                    prompt=prompt,
+                    raw="",
+                    error=f"ollama error: {resp.status_code}",
+                ).model_dump(),
+                status_code=502,
+            )
+        data = resp.json()
+        raw = (data.get("response") or "").strip()
+        parsed = None
+        error = None
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as err:
+                error = f"json_parse_error: {err}"
+        return JSONResponse(
+            TeamAQueryGenResponse(
+                ok=True,
+                model=model,
+                prompt=prompt,
+                raw=raw,
+                json=parsed,
+                error=error,
+            ).model_dump()
+        )
+    except Exception as err:
+        return JSONResponse(
+            TeamAQueryGenResponse(
+                ok=False,
+                model=model,
+                prompt=prompt,
+                raw="",
+                error=str(err),
+            ).model_dump(),
+            status_code=502,
+        )
+
+
+@router.post("/team-a/retrieve")
+def team_a_retrieve(req: TeamARetrieveRequest, db: Session = Depends(get_db)) -> JSONResponse:
+    results: list[Dict[str, Any]] = []
+    for item in req.claims:
+        claim_id = item.get("claim_id") or item.get("claimId") or item.get("id") or "-"
+        query_pack = item.get("query_pack") or {}
+        wiki_items = query_pack.get("wiki_db") if isinstance(query_pack, dict) else None
+        news_queries = query_pack.get("news_search") if isinstance(query_pack, dict) else None
+        if isinstance(news_queries, str):
+            news_queries = [news_queries]
+        news_queries = [str(q).strip() for q in (news_queries or []) if str(q).strip()]
+        if isinstance(wiki_items, dict):
+            wiki_items = [wiki_items]
+        queries: list[str] = []
+        for item_q in wiki_items or []:
+            if isinstance(item_q, dict):
+                q = str(item_q.get("q") or "").strip()
+            else:
+                q = str(item_q or "").strip()
+            if q:
+                queries.append(q)
+
+        def run_query(query: str) -> Dict[str, Any]:
+            local_db = SessionLocal()
+            try:
+                pack = retrieve_wiki_hits(
+                    local_db,
+                    question=query,
+                    top_k=req.top_k,
+                    window=req.window,
+                    page_limit=req.page_limit,
+                    embed_missing=req.embed_missing,
+                    max_chars=req.max_chars,
+                    search_mode=req.search_mode,
+                )
+                return {
+                    "query": query,
+                    "candidates": pack.get("candidates", []),
+                    "hits": pack.get("hits", []),
+                    "debug": pack.get("debug"),
+                }
+            finally:
+                local_db.close()
+
+        wiki_results: list[Dict[str, Any]] = []
+        news_results: list[Dict[str, Any]] = []
+        if queries or news_queries:
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures: Dict[str, Any] = {}
+                if queries:
+                    futures["wiki"] = pool.submit(lambda: list(map(run_query, queries)))
+                if news_queries:
+                    futures["news"] = pool.submit(
+                        lambda: list(
+                            map(lambda q: _naver_news_search(q, req.news_display), news_queries)
+                        )
+                    )
+                if "wiki" in futures:
+                    wiki_results = futures["wiki"].result()
+                if "news" in futures:
+                    news_results = futures["news"].result()
+        results.append(
+            {
+                "claim_id": claim_id,
+                "wiki": wiki_results,
+                "news": news_results,
+                "skipped": not wiki_results and not news_results,
+            }
+        )
+    return JSONResponse({"ok": True, "results": results})
 
 
 @router.get("/health")

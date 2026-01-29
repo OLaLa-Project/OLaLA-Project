@@ -19,7 +19,6 @@ node_modules/
 .DS_Store
 
 # Models / data
-models/
 checkpoints/
 *.safetensors
 *.bin

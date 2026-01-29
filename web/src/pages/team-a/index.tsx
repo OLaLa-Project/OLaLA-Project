@@ -1,23 +1,45 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-type SlotStatus = "idle" | "running" | "done" | "error";
+type SearchMode = "fts" | "lexical" | "vector";
 
-type SlotMetrics = {
-  total_ms?: number;
-  load_ms?: number;
-  prompt_tokens?: number;
-  prompt_eval_ms?: number;
-  gen_tokens?: number;
-  gen_eval_ms?: number;
+type QueryGenResult = {
+  ok: boolean;
+  model: string;
+  prompt: string;
+  raw: string;
+  json?: any;
+  error?: string | null;
 };
 
-type Slot = {
-  id: string;
-  model: string;
-  response: string;
-  status: SlotStatus;
-  error?: string;
-  metrics?: SlotMetrics;
+type RetrieveResult = {
+  ok: boolean;
+  results: Array<{
+    claim_id: string;
+    skipped: boolean;
+    wiki: Array<{
+      query: string;
+      candidates: Array<{ page_id: number; title: string; score?: number }>;
+      hits: Array<{
+        title: string;
+        page_id: number;
+        chunk_id: number;
+        chunk_idx: number;
+        snippet: string;
+      }>;
+      debug?: any;
+    }>;
+    news?: Array<{
+      query: string;
+      items: Array<{
+        title?: string;
+        link?: string;
+        originallink?: string;
+        pubDate?: string;
+        description?: string;
+      }>;
+      error?: string | null;
+    }>;
+  }>;
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
@@ -28,97 +50,180 @@ async function apiGet(path: string) {
   return res.json();
 }
 
-async function streamGenerate(
-  model: string,
-  prompt: string,
-  signal: AbortSignal,
-  onDelta: (chunk: string) => void,
-  onDone: (meta: any) => void
-) {
-  const res = await fetch(`${API_BASE}/api/generate-stream`, {
+async function apiPost(path: string, payload: unknown, signal?: AbortSignal) {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, prompt }),
+    body: JSON.stringify(payload),
     signal,
   });
-  if (!res.ok || !res.body) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      if (data && data.error) message = data.error;
-    } catch (err) {
-      try {
-        const text = await res.text();
-        if (text) message = text.slice(0, 200);
-      } catch (err2) {
-        message = "stream failed";
-      }
-    }
-    throw new Error(message);
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    buffer += decoder.decode(chunk.value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let data;
-      try {
-        data = JSON.parse(trimmed);
-      } catch (err) {
-        continue;
-      }
-      if (data.error) throw new Error(data.error);
-      if (data.response) onDelta(data.response);
-      if (data.done) {
-        onDone(data);
-        return;
-      }
-    }
-  }
+  if (!res.ok) throw new Error(`POST ${path} failed`);
+  return res.json();
+}
+
+function buildPrompt(userRequest: string, title: string, articleText: string) {
+  return (
+    "너는 단순 요약기가 아니라, 기사 속 의도/논란의 소지를 파헤치는 ‘수석 팩트체커 + QueryGen(Stage2)’이다.\n" +
+    "입력으로 주어진 title과 [SENTENCES]를 바탕으로,\n" +
+    "(1) 기사 주제와 core_narrative를 작성하고,\n" +
+    "(2) 검증이 필요한 핵심 claims 3개를 [SENTENCES]에서 “문장 그대로” 선택하며,\n" +
+    "(3) 각 claim마다 verification_reason, time_sensitivity, 그리고 위키피디아 로컬 DB 조회용 쿼리(wiki_db)와 최신 뉴스 검색용 쿼리(news_search)를 생성하라.\n\n" +
+    "[절대 규칙]\n" +
+    "1) 출력은 오직 “유효한 JSON”만 허용한다. 마크다운, 주석, 코드펜스(```)를 절대 포함하지 마라.\n" +
+    "2) 아래 [SENTENCES]는 article_text를 문장 단위로 분해한 것이다.\n" +
+    "3) claims[].주장 값은 반드시 [SENTENCES]의 문장 텍스트를 “완전히 동일하게” 그대로 복사해야 한다.\n" +
+    "   - 글자 하나라도 바꾸면 실패다(띄어쓰기/따옴표/조사/숫자 포함).\n" +
+    "   - 문장 일부만 발췌하지 말고, 반드시 ‘한 문장 전체’를 그대로 사용해라.\n" +
+    "4) claims는 정확히 3개만 출력한다. claim_id는 C1, C2, C3 고정.\n" +
+    "5) claim_type은 반드시 아래 중 하나로만 선택한다:\n" +
+    "   - 사건 | 논리 | 통계 | 인용 | 정책\n" +
+    "6) verification_reason는 “왜 이 문장이 핵심 논점/논란 포인트인지”를 맥락적으로 설명하되, 기사 밖의 새로운 사실을 만들어내지 마라.\n" +
+    "7) time_sensitivity는 low|mid|high 중 하나로 지정한다.\n" +
+    "   - high: 최신 논란/팬 반응/시즌 전망/최근 발언 등 시점 영향이 큰 것\n" +
+    "   - low: 인물/팀/리그/제도처럼 시간 영향이 적은 것\n" +
+    "8) query_pack 생성 규칙:\n" +
+    "   8-1) wiki_db: 정확히 3개를 생성한다. 각 원소는 {\"mode\":\"title|fulltext\",\"q\":\"string\"} 형식의 객체다.\n" +
+    "        - 목적: ‘검증’이 아니라 로컬 위키에서 배경/정의/고정 사실(인물·팀·리그·대회·제도)을 찾기 위함.\n" +
+    "        - title은 실제 문서 제목으로 존재할 가능성이 높은 엔터티(인물/팀/리그/대회/제도)를 우선한다.\n" +
+    "        - fulltext는 개념/동의어/표기 변형을 포함해 검색 폭을 넓힌다.\n" +
+    "        - 한국어 타이틀을 우선하고, 영문 표기는 필요 시 fulltext에 보조로 넣어라.\n" +
+    "        - 이 기사처럼 위키 검증이 불필요한 claim이어도 wiki_db는 “배경 확보용”으로만 최소한으로 구성해라(예: 인물/팀/리그).\n" +
+    "   8-2) news_search: 각 claim마다 정확히 4개 “문자열”을 생성한다. (객체/딕셔너리 금지)\n" +
+    "        - 구성: (진위/공식 확인용 2개) + (반대/비교 데이터 탐색용 2개)\n" +
+    "        - 필요 시 연도/시점, 공식 출처 키워드(구단 발표, KBO 공식 기록, 인터뷰 원문 등)를 포함한다.\n" +
+    "9) JSON 스키마를 반드시 지켜라.\n\n" +
+    "[출력 스키마]\n" +
+    "{\n" +
+    "  \"주제\": \"string\",\n" +
+    "  \"core_narrative\": \"string\",\n" +
+    "  \"claims\": [\n" +
+    "    {\n" +
+    "      \"claim_id\": \"C1\",\n" +
+    "      \"주장\": \"string\",\n" +
+    "      \"claim_type\": \"사건|논리|통계|인용|정책\",\n" +
+    "      \"verification_reason\": \"string\",\n" +
+    "      \"time_sensitivity\": \"low|mid|high\",\n" +
+    "      \"query_pack\": {\n" +
+    "        \"wiki_db\": [\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"}\n" +
+    "        ],\n" +
+    "        \"news_search\": [\"string\",\"string\",\"string\",\"string\"]\n" +
+    "      }\n" +
+    "    },\n" +
+    "    {\n" +
+    "      \"claim_id\": \"C2\",\n" +
+    "      \"주장\": \"string\",\n" +
+    "      \"claim_type\": \"사건|논리|통계|인용|정책\",\n" +
+    "      \"verification_reason\": \"string\",\n" +
+    "      \"time_sensitivity\": \"low|mid|high\",\n" +
+    "      \"query_pack\": {\n" +
+    "        \"wiki_db\": [\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"}\n" +
+    "        ],\n" +
+    "        \"news_search\": [\"string\",\"string\",\"string\",\"string\"]\n" +
+    "      }\n" +
+    "    },\n" +
+    "    {\n" +
+    "      \"claim_id\": \"C3\",\n" +
+    "      \"주장\": \"string\",\n" +
+    "      \"claim_type\": \"사건|논리|통계|인용|정책\",\n" +
+    "      \"verification_reason\": \"string\",\n" +
+    "      \"time_sensitivity\": \"low|mid|high\",\n" +
+    "      \"query_pack\": {\n" +
+    "        \"wiki_db\": [\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"},\n" +
+    "          {\"mode\":\"title|fulltext\",\"q\":\"string\"}\n" +
+    "        ],\n" +
+    "        \"news_search\": [\"string\",\"string\",\"string\",\"string\"]\n" +
+    "      }\n" +
+    "    }\n" +
+    "  ]\n" +
+    "}\n\n" +
+    "[INPUT]\n" +
+    `user_request: \"${userRequest}\"\n` +
+    `title: \"${title}\"\n` +
+    "SENTENCES:\n" +
+    `${articleText}\n` +
+    "[/INPUT]\n\n" +
+    "[최종 점검(출력 금지)]\n" +
+    "- JSON만 출력했는가? (첫 글자 {, 마지막 글자 })\n" +
+    "- claims 3개인가? claim_id가 C1~C3인가?\n" +
+    "- 각 주장 문장이 [SENTENCES] 중 하나와 완전히 동일한가?\n" +
+    "- news_search가 문자열 4개인가? (객체 금지)\n" +
+    "- wiki_db가 객체 3개인가? mode가 title|fulltext 중 하나인가?\n\n" +
+    "이제 JSON만 출력하라.\n"
+  );
 }
 
 function TeamAPage() {
   const [models, setModels] = useState<string[]>([]);
-  const [psMap, setPsMap] = useState<Record<string, any>>({});
-  const [prompt, setPrompt] = useState("");
-  const [slots, setSlots] = useState<Slot[]>([
-    { id: "slot-0", model: "", response: "", status: "idle" },
-    { id: "slot-1", model: "", response: "", status: "idle" },
-    { id: "slot-2", model: "", response: "", status: "idle" },
-  ]);
-  const controllerRef = useRef<Record<string, AbortController>>({});
-  const slotCounter = useRef(3);
-  const hasRunning = slots.some((slot) => slot.status === "running");
-  const canSend = prompt.trim() && slots.some((slot) => slot.model.trim());
+  const [model, setModel] = useState("gemma2:2b");
+  const [searchMode, setSearchMode] = useState<SearchMode>("fts");
+
+  const [userRequest, setUserRequest] = useState("");
+  const [title, setTitle] = useState("");
+  const [articleText, setArticleText] = useState("");
+
+  const [promptText, setPromptText] = useState("");
+  const [querygen, setQuerygen] = useState<QueryGenResult | null>(null);
+  const [retrieve, setRetrieve] = useState<RetrieveResult | null>(null);
+  const [loadingStage2, setLoadingStage2] = useState(false);
+  const [loadingStage3, setLoadingStage3] = useState(false);
+  const [stage3Error, setStage3Error] = useState<string | null>(null);
+  const [manualJson, setManualJson] = useState("");
+
+  const stage2Controller = useRef<AbortController | null>(null);
+  const stage3Controller = useRef<AbortController | null>(null);
+
+  const canRunStage2 = articleText.trim().length > 0 && !loadingStage2;
+  const claims = useMemo(() => {
+    const list = querygen?.json?.["claims"] || querygen?.json?.["주장들"];
+    return Array.isArray(list) ? list : [];
+  }, [querygen]);
+
+  const manualParse = useMemo(() => {
+    if (!manualJson.trim()) return { claims: [] as any[], error: null as string | null };
+    try {
+      const parsed = JSON.parse(manualJson);
+      const list = parsed?.["claims"] || parsed?.["주장들"];
+      return { claims: Array.isArray(list) ? list : [], error: null };
+    } catch (err: any) {
+      return { claims: [], error: err?.message || "invalid JSON" };
+    }
+  }, [manualJson]);
+
+  const stage3Queries = useMemo(() => {
+    const rows: Array<{ claim_id: string; wiki: string[]; news: string[] }> = [];
+    const sourceClaims = claims.length ? claims : manualParse.claims;
+    sourceClaims.forEach((claim: any) => {
+      const claimId = claim?.claim_id || claim?.claimId || "-";
+      const pack = claim?.query_pack || {};
+      const wikiItems = Array.isArray(pack?.wiki_db) ? pack.wiki_db : [];
+      const newsItems = Array.isArray(pack?.news_search) ? pack.news_search : [];
+      const wikiQs = wikiItems
+        .map((w: any) => (typeof w === "string" ? w : w?.q))
+        .filter((q: any) => typeof q === "string" && q.trim())
+        .map((q: string) => q.trim());
+      const newsQs = newsItems
+        .filter((q: any) => typeof q === "string" && q.trim())
+        .map((q: string) => q.trim());
+      rows.push({ claim_id: claimId, wiki: wikiQs, news: newsQs });
+    });
+    return rows;
+  }, [claims, manualParse.claims]);
 
   useEffect(() => {
     loadModels();
-    return () => abortAllControllers();
   }, []);
 
   useEffect(() => {
-    if (!models.length) return;
-    setSlots((prev) =>
-      prev.map((slot, index) => {
-        if (slot.model) return slot;
-        return { ...slot, model: models[index] || models[0] };
-      })
-    );
-  }, [models]);
-
-  useEffect(() => {
-    if (!hasRunning) return;
-    loadOllamaPs();
-    const timer = setInterval(loadOllamaPs, 2500);
-    return () => clearInterval(timer);
-  }, [hasRunning]);
+    setPromptText(buildPrompt(userRequest, title, articleText));
+  }, [userRequest, title, articleText]);
 
   async function loadModels() {
     try {
@@ -126,260 +231,125 @@ function TeamAPage() {
       if (data.ok) {
         const list = (data.models || []).map((item: any) => item.name).filter(Boolean);
         setModels(list);
+        if (!model && list.length) setModel(list[0]);
       }
     } catch (err) {
       setModels([]);
     }
   }
 
-  async function loadOllamaPs() {
+  async function runStage2() {
+    if (!canRunStage2) return;
+    if (stage2Controller.current) stage2Controller.current.abort();
+    stage2Controller.current = new AbortController();
+    setLoadingStage2(true);
+    setQuerygen(null);
+    setRetrieve(null);
+    setStage3Error(null);
     try {
-      const data = await apiGet("/api/ps");
-      if (data.ok) {
-        const next: Record<string, any> = {};
-        (data.models || []).forEach((item: any) => {
-          const name = item.name || item.model;
-          if (name) next[name] = item;
-        });
-        setPsMap(next);
-      }
-    } catch (err) {
-      setPsMap({});
+      const data = await apiPost(
+        "/api/team-a/querygen",
+        {
+          model,
+          user_request: userRequest,
+          title,
+          article_text: articleText,
+          prompt: promptText,
+        },
+        stage2Controller.current.signal
+      );
+      setQuerygen(data as QueryGenResult);
+    } catch (err: any) {
+      setQuerygen({
+        ok: false,
+        model,
+        prompt: promptText,
+        raw: "",
+        error: err.message || "failed",
+      });
+    } finally {
+      setLoadingStage2(false);
+      stage2Controller.current = null;
     }
   }
 
-  function updateSlot(id: string, patch: Partial<Slot>) {
-    setSlots((prev) => prev.map((slot) => (slot.id === id ? { ...slot, ...patch } : slot)));
-  }
-
-  function appendResponse(id: string, chunk: string) {
-    setSlots((prev) =>
-      prev.map((slot) =>
-        slot.id === id ? { ...slot, response: `${slot.response}${chunk}` } : slot
-      )
-    );
-  }
-
-  function addSlot() {
-    const id = `slot-${slotCounter.current++}`;
-    setSlots((prev) => [
-      ...prev,
-      { id, model: models[0] || "", response: "", status: "idle" },
-    ]);
-  }
-
-  function removeSlot(id: string) {
-    const controller = controllerRef.current[id];
-    if (controller) controller.abort();
-    delete controllerRef.current[id];
-    setSlots((prev) => prev.filter((slot) => slot.id !== id));
-  }
-
-  function abortAllControllers() {
-    Object.values(controllerRef.current).forEach((controller) => controller.abort());
-    controllerRef.current = {};
+  async function runStage3() {
+    const sourceClaims = claims.length ? claims : manualParse.claims;
+    if (!sourceClaims.length || loadingStage3) return;
+    if (stage3Controller.current) stage3Controller.current.abort();
+    stage3Controller.current = new AbortController();
+    setLoadingStage3(true);
+    setRetrieve(null);
+    setStage3Error(null);
+    try {
+      const data = await apiPost(
+        "/api/team-a/retrieve",
+        {
+          claims: sourceClaims,
+          top_k: 6,
+          page_limit: 8,
+          window: 2,
+          max_chars: 2000,
+          embed_missing: true,
+          search_mode: searchMode,
+        },
+        stage3Controller.current.signal
+      );
+      setRetrieve(data as RetrieveResult);
+    } catch (err: any) {
+      setRetrieve({ ok: false, results: [] } as RetrieveResult);
+      setStage3Error(err.message || "stage3 failed");
+    } finally {
+      setLoadingStage3(false);
+      stage3Controller.current = null;
+    }
   }
 
   function stopAll() {
-    abortAllControllers();
-    setSlots((prev) =>
-      prev.map((slot) => ({ ...slot, status: "idle", error: "", metrics: undefined }))
-    );
-  }
-
-  function clearAll() {
-    setSlots((prev) =>
-      prev.map((slot) => ({ ...slot, response: "", error: "", metrics: undefined }))
-    );
-  }
-
-  function toMs(value?: number) {
-    if (!value && value !== 0) return undefined;
-    return Math.round(value / 1_000_000);
-  }
-
-  function parseMetrics(meta: any): SlotMetrics {
-    return {
-      total_ms: toMs(meta.total_duration),
-      load_ms: toMs(meta.load_duration),
-      prompt_tokens: meta.prompt_eval_count ?? undefined,
-      prompt_eval_ms: toMs(meta.prompt_eval_duration),
-      gen_tokens: meta.eval_count ?? undefined,
-      gen_eval_ms: toMs(meta.eval_duration),
-    };
-  }
-
-  function formatMs(value?: number) {
-    if (value === undefined) return "--";
-    return `${value} ms`;
-  }
-
-  function formatCount(value?: number) {
-    if (value === undefined) return "--";
-    return `${value}`;
-  }
-
-  function formatBytes(value?: number) {
-    if (value === undefined || value === null) return "--";
-    if (value === 0) return "0 B";
-    const units = ["B", "KB", "MB", "GB", "TB"];
-    let size = value;
-    let unit = 0;
-    while (size >= 1024 && unit < units.length - 1) {
-      size /= 1024;
-      unit += 1;
-    }
-    return `${size.toFixed(size >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
-  }
-
-  async function runParallel() {
-    const question = prompt.trim();
-    if (!question) return;
-    stopAll();
-    setSlots((prev) =>
-      prev.map((slot) => {
-        if (!slot.model.trim()) {
-          return {
-            ...slot,
-            status: "error",
-            response: "",
-            error: "model required",
-            metrics: undefined,
-          };
-        }
-        return { ...slot, status: "running", response: "", error: "", metrics: undefined };
-      })
-    );
-
-    slots.forEach((slot) => {
-      const model = slot.model.trim();
-      if (!model) return;
-      const controller = new AbortController();
-      controllerRef.current[slot.id] = controller;
-      streamGenerate(
-        model,
-        question,
-        controller.signal,
-        (chunk) => appendResponse(slot.id, chunk),
-        (meta) => updateSlot(slot.id, { metrics: parseMetrics(meta) })
-      )
-        .then(() => {
-          updateSlot(slot.id, { status: "done" });
-        })
-        .catch((err: any) => {
-          if (err.name === "AbortError") {
-            updateSlot(slot.id, { status: "idle", error: "stopped" });
-          } else {
-            updateSlot(slot.id, { status: "error", error: err.message });
-          }
-        })
-        .finally(() => {
-          delete controllerRef.current[slot.id];
-        });
-    });
+    if (stage2Controller.current) stage2Controller.current.abort();
+    if (stage3Controller.current) stage3Controller.current.abort();
+    setLoadingStage2(false);
+    setLoadingStage3(false);
   }
 
   return (
     <div className="team">
       <div className="team-header">
-        <h2>Team A (Evidence Pipeline)</h2>
-        <p>Stage 1~5</p>
-      </div>
-      <div className="team-grid">
-        <section className="team-card">
-          <h3>Focus</h3>
-          <ul>
-            <li>stage01_normalize</li>
-            <li>stage02_querygen</li>
-            <li>stage03_retrieve</li>
-            <li>stage04_rerank</li>
-            <li>stage05_topk</li>
-          </ul>
-        </section>
-        <section className="team-card">
-          <h3>Working Paths</h3>
-          <div className="team-paths">
-            <div>backend/app/stages/stage01_normalize</div>
-            <div>backend/app/stages/stage02_querygen</div>
-            <div>backend/app/stages/stage03_retrieve</div>
-            <div>backend/app/stages/stage04_rerank</div>
-            <div>backend/app/stages/stage05_topk</div>
-          </div>
-        </section>
+        <h2>Team A</h2>
+        <p>Stage1~3 실험 UI (dashboard.py + web UI only)</p>
       </div>
 
       <section className="team-stage">
         <div className="team-stage-header">
           <div>
-            <h3>Stage 01~03 UI</h3>
-            <p>Pipeline UI placeholders for normalize, querygen, retrieve.</p>
+            <h3>Stage 1. 입력 (직접 제목/본문)</h3>
+            <p>URL 대신 직접 기사 제목/본문을 입력한다.</p>
           </div>
         </div>
         <div className="team-stage-grid">
-          <section className="team-stage-card">
-            <div className="team-slot-head">
-              <h4>Stage 01 Normalize</h4>
-              <span className="pill status" data-state="idle">
-                UI only
-              </span>
-            </div>
-            <div className="label">Inputs</div>
-            <div className="team-paths">
-              <div>claim</div>
-              <div>snippet</div>
-              <div>metadata</div>
-            </div>
-            <div className="label">Outputs</div>
-            <div className="team-paths">
-              <div>normalized claim</div>
-              <div>canonical evidence</div>
-              <div>entity map</div>
-            </div>
-            <div className="hint">Format cleanup, de-dup, locale normalization.</div>
-          </section>
-
-          <section className="team-stage-card">
-            <div className="team-slot-head">
-              <h4>Stage 02 QueryGen</h4>
-              <span className="pill status" data-state="idle">
-                UI only
-              </span>
-            </div>
-            <div className="label">Inputs</div>
-            <div className="team-paths">
-              <div>normalized claim</div>
-              <div>entity map</div>
-              <div>context hints</div>
-            </div>
-            <div className="label">Outputs</div>
-            <div className="team-paths">
-              <div>query variants</div>
-              <div>keyword bundles</div>
-              <div>search constraints</div>
-            </div>
-            <div className="hint">Generate diversified queries for recall.</div>
-          </section>
-
-          <section className="team-stage-card">
-            <div className="team-slot-head">
-              <h4>Stage 03 Retrieve</h4>
-              <span className="pill status" data-state="idle">
-                UI only
-              </span>
-            </div>
-            <div className="label">Inputs</div>
-            <div className="team-paths">
-              <div>query variants</div>
-              <div>search constraints</div>
-              <div>source policy</div>
-            </div>
-            <div className="label">Outputs</div>
-            <div className="team-paths">
-              <div>candidate evidence</div>
-              <div>source metadata</div>
-              <div>top-k bundles</div>
-            </div>
-            <div className="hint">Fetch and package evidence for rerank.</div>
+          <section className="team-stage-card team-stage-controls">
+            <div className="label">user_request (optional)</div>
+            <input
+              className="input"
+              placeholder="사용자 요청"
+              value={userRequest}
+              onChange={(e) => setUserRequest(e.target.value)}
+            />
+            <div className="label">title</div>
+            <input
+              className="input"
+              placeholder="기사 제목"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+            <div className="label">article_text</div>
+            <textarea
+              className="textarea"
+              placeholder="기사 본문"
+              value={articleText}
+              onChange={(e) => setArticleText(e.target.value)}
+              style={{ minHeight: 220 }}
+            />
           </section>
         </div>
       </section>
@@ -387,131 +357,198 @@ function TeamAPage() {
       <section className="team-stage">
         <div className="team-stage-header">
           <div>
-            <h3>Stage 4 Parallel Model Test</h3>
-            <p>Run multiple Ollama models in parallel on a single server.</p>
+            <h3>Stage 2. QueryGen (JSON)</h3>
+            <p>프롬프트를 직접 수정하고 JSON 출력만 받는다.</p>
           </div>
           <div className="row">
-            <button className="pill ghost" onClick={addSlot}>
-              Add model
-            </button>
+            <input
+              className="input"
+              list="team-a-models"
+              placeholder="model:tag"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              style={{ width: 220 }}
+            />
             <button className="pill ghost" onClick={loadModels}>
               Refresh models
             </button>
-            <button className="pill ghost" onClick={loadOllamaPs}>
-              Refresh VRAM
+            <button className="pill ghost stop" onClick={stopAll}>
+              Stop
+            </button>
+            <button className="pill" onClick={runStage2} disabled={!canRunStage2}>
+              {loadingStage2 ? "Running..." : "Run Stage2"}
             </button>
           </div>
         </div>
-
         <div className="team-stage-grid">
-          <section className="team-stage-card team-stage-controls">
-            <div className="card-head">
-              <h4>Prompt</h4>
-              <div className="row">
-                <button className="pill ghost" onClick={clearAll}>
-                  Clear outputs
-                </button>
-                <button className="pill ghost stop" onClick={stopAll} disabled={!hasRunning}>
-                  Stop all
-                </button>
-                <button className="pill" onClick={runParallel} disabled={!canSend}>
-                  Send all
-                </button>
-              </div>
-            </div>
+          <section className="team-stage-card">
+            <div className="label">Prompt (editable)</div>
             <textarea
               className="textarea"
-              placeholder="Claim, snippet, and a scoring rule..."
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              value={promptText}
+              onChange={(e) => setPromptText(e.target.value)}
+              style={{ minHeight: 240 }}
             />
-            <div className="hint">
-              Stage 4: EvidenceScorer (claim + snippet -&gt; relevance score).
-            </div>
           </section>
-
-          {slots.map((slot) => {
-            const statusLabel =
-              slot.status === "running"
-                ? "Running"
-                : slot.status === "done"
-                  ? "Done"
-                  : slot.status === "error"
-                    ? "Error"
-                    : "Idle";
-            const statusState =
-              slot.status === "running"
-                ? "busy"
-                : slot.status === "error"
-                  ? "down"
-                  : slot.status === "done"
-                    ? "ok"
-                    : "idle";
-            const psInfo = psMap[slot.model];
-            const vramBytes =
-              psInfo?.size_vram ?? psInfo?.vram_usage ?? psInfo?.size ?? undefined;
-            const vramLabel = psInfo?.size_vram || psInfo?.vram_usage ? "VRAM" : "Size";
-            return (
-              <section className="team-stage-card" key={slot.id}>
-                <div className="team-slot-head">
-                  <h4>Model</h4>
-                  <div className="team-slot-actions">
-                    <span className="pill status" data-state={statusState}>
-                      {statusLabel}
-                    </span>
-                    <button className="pill ghost" onClick={() => removeSlot(slot.id)}>
-                      Remove
-                    </button>
-                  </div>
-                </div>
-                <input
-                  className="input"
-                  list="team-a-models"
-                  placeholder="model:tag"
-                  value={slot.model}
-                  onChange={(e) => updateSlot(slot.id, { model: e.target.value })}
-                />
-                <div className="team-slot-meta">
-                  {vramLabel}: <span>{formatBytes(vramBytes)}</span>
-                </div>
-                <div className="label">Response</div>
-                <div className="output team-slot-output">{slot.response}</div>
-                <div className="team-slot-metrics">
-                  <div className="team-slot-metric">
-                    <span>total</span>
-                    <strong>{formatMs(slot.metrics?.total_ms)}</strong>
-                  </div>
-                  <div className="team-slot-metric">
-                    <span>load</span>
-                    <strong>{formatMs(slot.metrics?.load_ms)}</strong>
-                  </div>
-                  <div className="team-slot-metric">
-                    <span>prompt tokens</span>
-                    <strong>{formatCount(slot.metrics?.prompt_tokens)}</strong>
-                  </div>
-                  <div className="team-slot-metric">
-                    <span>prompt eval</span>
-                    <strong>{formatMs(slot.metrics?.prompt_eval_ms)}</strong>
-                  </div>
-                  <div className="team-slot-metric">
-                    <span>gen tokens</span>
-                    <strong>{formatCount(slot.metrics?.gen_tokens)}</strong>
-                  </div>
-                  <div className="team-slot-metric">
-                    <span>gen eval</span>
-                    <strong>{formatMs(slot.metrics?.gen_eval_ms)}</strong>
-                  </div>
-                </div>
-                {slot.error ? <div className="team-slot-error">{slot.error}</div> : null}
-              </section>
-            );
-          })}
+          <section className="team-stage-card">
+            <div className="label">Output (raw)</div>
+            <div className="output" style={{ whiteSpace: "pre-wrap", minHeight: 220 }}>
+              {querygen?.raw || querygen?.error || "-"}
+            </div>
+            <div className="label">Output (parsed JSON)</div>
+            <pre className="output" style={{ whiteSpace: "pre-wrap", minHeight: 220 }}>
+              {querygen?.json ? JSON.stringify(querygen.json, null, 2) : "-"}
+            </pre>
+          </section>
         </div>
         <datalist id="team-a-models">
-          {models.map((model) => (
-            <option key={model} value={model} />
+          {models.map((m) => (
+            <option key={m} value={m} />
           ))}
         </datalist>
+      </section>
+
+      <section className="team-stage">
+        <div className="team-stage-header">
+          <div>
+            <h3>Stage 3. Retrieve (DB only)</h3>
+            <p>Stage2 결과의 위키피디아 쿼리로 DB 검색만 수행.</p>
+          </div>
+          <div className="row">
+            <div className="row">
+              <button
+                className={`pill ${searchMode === "vector" ? "" : "ghost"}`}
+                onClick={() => setSearchMode("vector")}
+              >
+                Vector
+              </button>
+              <button
+                className={`pill ${searchMode === "fts" ? "" : "ghost"}`}
+                onClick={() => setSearchMode("fts")}
+              >
+                FTS
+              </button>
+              <button
+                className={`pill ${searchMode === "lexical" ? "" : "ghost"}`}
+                onClick={() => setSearchMode("lexical")}
+              >
+                Lexical
+              </button>
+              <div className="hint">mode: {searchMode}</div>
+            </div>
+            <button
+              className="pill"
+              onClick={runStage3}
+              disabled={(!claims.length && !manualParse.claims.length) || loadingStage3}
+            >
+              {loadingStage3 ? "Running..." : "Run Stage3"}
+            </button>
+          </div>
+        </div>
+        <div className="team-stage-grid">
+          <section className="team-stage-card">
+            <div className="label">Claims</div>
+            <pre className="output" style={{ whiteSpace: "pre-wrap", minHeight: 180 }}>
+              {claims.length ? JSON.stringify(claims, null, 2) : "-"}
+            </pre>
+            <div className="label">Stage3 queries</div>
+            <div className="output" style={{ whiteSpace: "pre-wrap", minHeight: 180 }}>
+              {stage3Queries.length
+                ? stage3Queries.map((row) => (
+                    <div key={`q-${row.claim_id}`} style={{ marginBottom: 12 }}>
+                      <div>
+                        <strong>{row.claim_id}</strong>
+                      </div>
+                      <div>news:</div>
+                      {(row.news || []).map((q, idx) => (
+                        <div key={`n-${row.claim_id}-${idx}`}>- {q}</div>
+                      ))}
+                      <div>wiki:</div>
+                      {(row.wiki || []).map((q, idx) => (
+                        <div key={`w-${row.claim_id}-${idx}`}>- {q}</div>
+                      ))}
+                    </div>
+                  ))
+                : "-"}
+            </div>
+            <div className="label">Manual JSON (paste)</div>
+            <textarea
+              className="textarea"
+              placeholder="Stage2 raw JSON을 여기에 붙여넣으면 Stage3 실행 가능"
+              value={manualJson}
+              onChange={(e) => setManualJson(e.target.value)}
+              style={{ minHeight: 160 }}
+            />
+            {manualJson.trim() ? (
+              <div className="hint">
+                {manualParse.error
+                  ? `parse error: ${manualParse.error}`
+                  : `claims: ${manualParse.claims.length}`}
+              </div>
+            ) : null}
+          </section>
+          <section className="team-stage-card">
+            <div className="label">Retrieve results</div>
+            <div className="team-stage-grid">
+              <section className="team-stage-card">
+                <div className="label">News search</div>
+                <div className="output" style={{ whiteSpace: "pre-wrap", minHeight: 180 }}>
+                  {stage3Error && <div className="hint">error: {stage3Error}</div>}
+                  {retrieve?.ok === false && "Retrieve failed"}
+                  {!retrieve && "-"}
+                  {retrieve?.ok &&
+                    retrieve.results.map((res) => (
+                      <div key={`news-${res.claim_id}`} style={{ marginBottom: 16 }}>
+                        <div>
+                          <strong>{res.claim_id}</strong> {res.skipped ? "(skipped)" : ""}
+                        </div>
+                        {(res.news || []).length ? (
+                          (res.news || []).map((n) => (
+                            <div key={`${res.claim_id}-news-${n.query}`} style={{ marginTop: 8 }}>
+                              <div>query: {n.query}</div>
+                              {n.error ? (
+                                <div className="hint">error: {n.error}</div>
+                              ) : (
+                                (n.items || []).map((item, idx) => (
+                                  <div key={`${res.claim_id}-news-${n.query}-${idx}`}>
+                                    - {item.title || "-"} ({item.pubDate || "-"})
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="hint">no news queries</div>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              </section>
+              <section className="team-stage-card">
+                <div className="label">Wiki DB</div>
+                <div className="output" style={{ whiteSpace: "pre-wrap", minHeight: 180 }}>
+                  {retrieve?.ok === false && "Retrieve failed"}
+                  {!retrieve && "-"}
+                  {retrieve?.ok &&
+                    retrieve.results.map((res) => (
+                      <div key={`wiki-${res.claim_id}`} style={{ marginBottom: 16 }}>
+                        <div>
+                          <strong>{res.claim_id}</strong> {res.skipped ? "(skipped)" : ""}
+                        </div>
+                        {res.wiki.map((w) => (
+                          <div key={w.query} style={{ marginTop: 8 }}>
+                            <div>query: {w.query}</div>
+                            <div>candidates: {w.candidates.length}</div>
+                            <div>hits: {w.hits.length}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
       </section>
     </div>
   );

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Optional, Sequence
+import re
 
 from sqlalchemy import bindparam, text, BigInteger
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -17,11 +18,14 @@ EMBED_MISSING_CAP = int(os.getenv("EMBED_MISSING_CAP", "300"))
 EMBED_MISSING_BATCH = int(os.getenv("EMBED_MISSING_BATCH", "64"))
 LEX_CHUNK_CAP = int(os.getenv("LEX_CHUNK_CAP", "80"))
 SNIPPET_CHARS = 240
+USE_FTS = os.getenv("USE_FTS", "0").lower() in {"1", "true", "yes", "on"}
 RERANK_OVERSAMPLE = int(os.getenv("RERANK_OVERSAMPLE", "5"))
 RERANK_VEC_W = float(os.getenv("RERANK_VEC_W", "1.0"))
-RERANK_TITLE_W = float(os.getenv("RERANK_TITLE_W", "0.25"))
-RERANK_LEX_W = float(os.getenv("RERANK_LEX_W", "0.05"))
+RERANK_TITLE_W = float(os.getenv("RERANK_TITLE_W", "0.5"))
+RERANK_LEX_W = float(os.getenv("RERANK_LEX_W", "0.2"))
+RERANK_WINDOW_LEX_W = float(os.getenv("RERANK_WINDOW_LEX_W", "0.3"))
 RERANK_PER_PAGE_CAP = int(os.getenv("RERANK_PER_PAGE_CAP", "2"))
+RERANK_ENTITY_PIN_TOPN = int(os.getenv("RERANK_ENTITY_PIN_TOPN", "3"))
 
 
 def _candidate_pages_trigram(db: Session, question: str, limit: int) -> list[dict[str, Any]]:
@@ -42,14 +46,31 @@ def _candidate_pages_ilike(db: Session, query: str, limit: int) -> list[dict[str
     if not query or limit <= 0:
         return []
     sql = text("""
-        SELECT page_id, title, 0.0 AS score
+        SELECT page_id, title, similarity(title, :q) AS score
         FROM public.wiki_pages
         WHERE title ILIKE '%' || :q || '%'
-        ORDER BY page_id
+        ORDER BY score DESC, length(title) ASC, page_id
         LIMIT :limit
     """)
     rows = db.execute(sql, {"q": query, "limit": limit}).all()
-    return [{"page_id": int(r[0]), "title": str(r[1]), "score": float(r[2])} for r in rows]
+    return [{"page_id": int(r[0]), "title": str(r[1]), "score": float(r[2]) * 10.0} for r in rows]
+
+
+def _candidate_pages_fts(db: Session, query: str, limit: int) -> list[dict[str, Any]]:
+    if not query or limit <= 0:
+        return []
+    sql = text("""
+        SELECT
+          page_id,
+          title,
+          ts_rank_cd(to_tsvector('simple', title), plainto_tsquery('simple', :q)) AS score
+        FROM public.wiki_pages
+        WHERE to_tsvector('simple', title) @@ plainto_tsquery('simple', :q)
+        ORDER BY score DESC, length(title) ASC
+        LIMIT :limit
+    """)
+    rows = db.execute(sql, {"q": query, "limit": limit}).all()
+    return [{"page_id": int(r[0]), "title": str(r[1]), "score": float(r[2]) * 50.0} for r in rows]
 
 
 def _candidate_pages_keyword_scored(
@@ -137,6 +158,43 @@ def _page_titles_by_ids(db: Session, page_ids: Sequence[int]) -> list[dict[str, 
     return [{"page_id": int(r[0]), "title": str(r[1]), "score": 0.0} for r in rows]
 
 
+def _fts_chunk_hits(
+    db: Session,
+    page_ids: Sequence[int],
+    query: str,
+    top_k: int = 8,
+) -> list[dict[str, Any]]:
+    if not page_ids or not query:
+        return []
+    sql = text("""
+        SELECT
+          c.page_id,
+          c.chunk_id,
+          c.chunk_idx,
+          c.content,
+          ts_rank_cd(to_tsvector('simple', c.content), plainto_tsquery('simple', :q)) AS score
+        FROM public.wiki_chunks c
+        WHERE c.page_id = ANY(:pids)
+          AND to_tsvector('simple', c.content) @@ plainto_tsquery('simple', :q)
+        ORDER BY score DESC
+        LIMIT :limit
+    """).bindparams(bindparam("pids", type_=ARRAY(BigInteger)))
+    rows = db.execute(sql, {"pids": list(page_ids), "q": query, "limit": top_k}).all()
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "page_id": int(r[0]),
+                "chunk_id": int(r[1]),
+                "chunk_idx": int(r[2]),
+                "content": str(r[3]),
+                "snippet": str(r[3])[:SNIPPET_CHARS],
+                "lex_score": float(r[4]),
+            }
+        )
+    return out
+
+
 def _lexical_chunk_hits(
     db: Session,
     page_ids: Sequence[int],
@@ -198,7 +256,35 @@ def _keyword_density(text: str, keywords: Sequence[str]) -> float:
     if not text or not keywords:
         return 0.0
     lower = text.lower()
-    return float(sum(lower.count(k.lower()) for k in keywords if k))
+    count = sum(lower.count(k.lower()) for k in keywords if k)
+    if count == 0:
+        return 0.0
+    return float(count) / max(1.0, (len(text) ** 0.5))
+
+
+def _all_keywords_present(text: str, keywords: Sequence[str]) -> bool:
+    if not keywords:
+        return True
+    if not text:
+        return False
+    lower = text.lower()
+    return all(k and k.lower() in lower for k in keywords)
+
+
+def _clean_prompt_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = text
+    cleaned = re.sub(r"<ref[^>]*/>", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<ref[^>]*>", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"</ref>", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"\{\{[^{}]*\}\}", " ", cleaned)
+    cleaned = re.sub(r"\[\[(?:[^|\]]*\|)?([^\]]+)\]\]", r"\1", cleaned)
+    cleaned = re.sub(r"https?://\S+", " ", cleaned)
+    cleaned = cleaned.replace("{", " ").replace("}", " ").replace("[", " ").replace("]", " ")
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned
 
 
 def _rerank_vector_hits(
@@ -237,11 +323,26 @@ def _rerank_vector_hits(
     scored.sort(key=lambda x: x["final_score"], reverse=True)
     if per_page_cap <= 0:
         return scored[:top_k]
+    pinned: list[dict[str, Any]] = []
+    if keywords:
+        for item in scored:
+            if len(pinned) >= RERANK_ENTITY_PIN_TOPN:
+                break
+            title_lower = item["title"].lower()
+            if any(k.lower() == title_lower for k in keywords if k):
+                pinned.append(item)
+
     kept: list[dict[str, Any]] = []
     per_page: dict[int, int] = {}
+    for item in pinned:
+        pid = item["page_id"]
+        per_page[pid] = per_page.get(pid, 0) + 1
+        kept.append(item)
     for item in scored:
         if len(kept) >= top_k:
             break
+        if item in pinned:
+            continue
         pid = item["page_id"]
         if per_page.get(pid, 0) >= per_page_cap:
             continue
@@ -259,9 +360,15 @@ def retrieve_wiki_hits(
     embed_missing: bool,
     max_chars: Optional[int] = None,
     page_ids: Optional[list[int]] = None,
+    search_mode: str = "auto",
 ) -> dict[str, Any]:
     repo = WikiRepository(db)
     debug: dict[str, Any] = {}
+
+    mode = (search_mode or "auto").lower()
+    if mode not in {"auto", "fts", "lexical", "vector"}:
+        mode = "auto"
+    debug["search_mode"] = mode
 
     if page_ids:
         candidates = _page_titles_by_ids(db, page_ids)
@@ -271,9 +378,28 @@ def retrieve_wiki_hits(
         debug["normalized_query"] = q_norm
         keywords = extract_keywords(q_norm)
         debug["keyword_count"] = len(keywords)
-
-        candidates = _candidate_pages_union(db, repo, q_norm, keywords, page_limit)
-        debug["lexical_mode"] = "union"
+        if mode == "fts":
+            candidates = _candidate_pages_fts(db, q_norm, page_limit)
+            debug["lexical_mode"] = "fts"
+            if not candidates:
+                candidates = _candidate_pages_union(db, repo, q_norm, keywords, page_limit)
+                debug["lexical_mode"] = "fts+union"
+        elif mode == "lexical":
+            candidates = _candidate_pages_union(db, repo, q_norm, keywords, page_limit)
+            debug["lexical_mode"] = "union"
+        elif mode == "vector":
+            candidates = _candidate_pages_union(db, repo, q_norm, keywords, page_limit)
+            debug["lexical_mode"] = "union"
+        else:
+            if USE_FTS:
+                candidates = _candidate_pages_fts(db, q_norm, page_limit)
+                debug["lexical_mode"] = "fts"
+                if not candidates:
+                    candidates = _candidate_pages_union(db, repo, q_norm, keywords, page_limit)
+                    debug["lexical_mode"] = "fts+union"
+            else:
+                candidates = _candidate_pages_union(db, repo, q_norm, keywords, page_limit)
+                debug["lexical_mode"] = "union"
 
     if not candidates:
         debug["lexical_miss"] = True
@@ -286,6 +412,7 @@ def retrieve_wiki_hits(
             "context": "",
         }
     debug["candidate_count"] = len(candidates)
+    debug["keywords_used"] = extract_keywords(normalize_question_to_query(question))
     debug["candidate_sample"] = [
         {"page_id": c["page_id"], "title": c["title"], "score": c.get("score")}
         for c in candidates[:5]
@@ -304,33 +431,18 @@ def retrieve_wiki_hits(
         )
 
     hits: list[dict[str, Any]] = []
-    qvec_literal = vector_literal(embed_text([question])[0])
-    oversample_k = max(top_k * max(RERANK_OVERSAMPLE, 1), top_k)
-    vec_hits = repo.vector_search(qvec_literal, top_k=oversample_k, page_ids=candidate_page_ids)
-    if not vec_hits and embed_missing and candidate_page_ids:
-        updated_embeddings += ensure_wiki_embeddings(
-            db,
-            repo,
-            candidate_page_ids,
-            max_chunks=EMBED_MISSING_CAP,
-            batch_size=EMBED_MISSING_BATCH,
-        )
-        vec_hits = repo.vector_search(qvec_literal, top_k=oversample_k, page_ids=candidate_page_ids)
-    if vec_hits:
-        rerank_keywords = extract_keywords(normalize_question_to_query(question))
-        if not rerank_keywords:
-            rerank_keywords = [t for t in question.replace("?", " ").split() if len(t) >= 2]
-        hits = _rerank_vector_hits(
-            vec_hits,
-            rerank_keywords,
-            per_page_cap=RERANK_PER_PAGE_CAP,
-            top_k=top_k,
-        )
-    else:
-        keywords = extract_keywords(normalize_question_to_query(question))
+    q_norm = normalize_question_to_query(question)
+    if mode in {"fts", "lexical"}:
+        keywords = extract_keywords(q_norm)
         if not keywords:
             keywords = [t for t in question.replace("?", " ").split() if len(t) >= 2]
-        lex_hits = _lexical_chunk_hits(db, candidate_page_ids, keywords, top_k=top_k)
+        if mode == "fts":
+            lex_hits = _fts_chunk_hits(db, candidate_page_ids, q_norm, top_k=top_k)
+            if not lex_hits:
+                lex_hits = _lexical_chunk_hits(db, candidate_page_ids, keywords, top_k=top_k)
+                debug["lexical_mode"] = "fts+like"
+        else:
+            lex_hits = _lexical_chunk_hits(db, candidate_page_ids, keywords, top_k=top_k)
         for h in lex_hits:
             hits.append(
                 {
@@ -349,9 +461,70 @@ def retrieve_wiki_hits(
                     "final_score": float(h["lex_score"]),
                 }
             )
-        if not hits:
+    else:
+        qvec_literal = vector_literal(embed_text([question])[0])
+        oversample_k = max(top_k * max(RERANK_OVERSAMPLE, 1), top_k)
+        vec_hits = repo.vector_search(qvec_literal, top_k=oversample_k, page_ids=candidate_page_ids)
+        if not vec_hits and embed_missing and candidate_page_ids:
+            updated_embeddings += ensure_wiki_embeddings(
+                db,
+                repo,
+                candidate_page_ids,
+                max_chunks=EMBED_MISSING_CAP,
+                batch_size=EMBED_MISSING_BATCH,
+            )
+            vec_hits = repo.vector_search(qvec_literal, top_k=oversample_k, page_ids=candidate_page_ids)
+        if vec_hits:
+            rerank_keywords = extract_keywords(q_norm)
+            if not rerank_keywords:
+                rerank_keywords = [t for t in question.replace("?", " ").split() if len(t) >= 2]
+            debug["keywords_used"] = rerank_keywords
+            hits = _rerank_vector_hits(
+                vec_hits,
+                rerank_keywords,
+                per_page_cap=RERANK_PER_PAGE_CAP,
+                top_k=top_k,
+            )
+        elif mode == "vector":
             debug["vector_miss"] = True
+        else:
+            keywords = extract_keywords(q_norm)
+            if not keywords:
+                keywords = [t for t in question.replace("?", " ").split() if len(t) >= 2]
+            if USE_FTS:
+                lex_hits = _fts_chunk_hits(db, candidate_page_ids, q_norm, top_k=top_k)
+                if not lex_hits:
+                    lex_hits = _lexical_chunk_hits(db, candidate_page_ids, keywords, top_k=top_k)
+                    debug["lexical_mode"] = "fts+like"
+                else:
+                    debug["lexical_mode"] = "fts"
+            else:
+                lex_hits = _lexical_chunk_hits(db, candidate_page_ids, keywords, top_k=top_k)
+            for h in lex_hits:
+                hits.append(
+                    {
+                        "title": next((c["title"] for c in candidates if c["page_id"] == h["page_id"]), ""),
+                        "page_id": h["page_id"],
+                        "chunk_id": h["chunk_id"],
+                        "chunk_idx": h["chunk_idx"],
+                        "content": h["content"],
+                        "snippet": h["snippet"],
+                        "dist": None,
+                        "lex_score": h["lex_score"],
+                        "title_score": _title_match_score(
+                            next((c["title"] for c in candidates if c["page_id"] == h["page_id"]), ""),
+                            keywords,
+                        ),
+                        "final_score": float(h["lex_score"]),
+                    }
+                )
+            if not hits:
+                debug["vector_miss"] = True
 
+    keywords_used = debug.get("keywords_used") or [
+        t for t in question.replace("?", " ").split() if len(t) >= 2
+    ]
+    filtered_missing_keywords = 0
     hits_with_window: list[dict[str, Any]] = []
     for h in hits:
         window_text = fetch_wiki_window(
@@ -361,6 +534,13 @@ def retrieve_wiki_hits(
             window=window,
             max_chars=2000,
         )
+        if not _all_keywords_present(window_text, keywords_used):
+            filtered_missing_keywords += 1
+            continue
+        cleaned_text = _clean_prompt_text(window_text)
+        window_lex = _keyword_density(window_text, keywords_used)
+        base_score = h.get("final_score") or 0.0
+        final_score = base_score + (RERANK_WINDOW_LEX_W * window_lex)
         hits_with_window.append(
             {
                 "title": h["title"],
@@ -368,20 +548,26 @@ def retrieve_wiki_hits(
                 "chunk_id": h["chunk_id"],
                 "chunk_idx": h["chunk_idx"],
                 "content": window_text,
+                "cleaned_content": cleaned_text,
                 "snippet": h["snippet"],
                 "dist": h["dist"],
-                "lex_score": h.get("lex_score"),
+                "lex_score": window_lex or h.get("lex_score"),
                 "title_score": h.get("title_score"),
-                "final_score": h.get("final_score"),
+                "final_score": final_score,
             }
         )
+    if filtered_missing_keywords:
+        debug["filtered_missing_keywords"] = filtered_missing_keywords
+    if hits_with_window and RERANK_WINDOW_LEX_W != 0.0:
+        hits_with_window.sort(key=lambda x: x.get("final_score") or 0.0, reverse=True)
 
     context = ""
     if max_chars:
         parts = []
         total = 0
         for i, h in enumerate(hits_with_window, start=1):
-            block = f"[{i}] {h['title']} (page_id={h['page_id']}, chunk_id={h['chunk_id']})\n{h['content']}\n"
+            body = h.get("cleaned_content") or h["content"]
+            block = f"[{i}] {h['title']} (page_id={h['page_id']}, chunk_id={h['chunk_id']})\n{body}\n"
             if total + len(block) > max_chars:
                 break
             parts.append(block)
@@ -395,4 +581,38 @@ def retrieve_wiki_hits(
         "updated_embeddings": updated_embeddings,
         "debug": debug,
         "context": context,
+        "prompt_context": context,
     }
+
+def calculate_hybrid_score(
+    hit: dict[str, Any],
+    keywords: list[str],
+    w_vec: float = 0.7,
+    w_title: float = 0.1,
+    w_lex: float = 0.2
+) -> float:
+    # 1. Vector Score (Distance to Similarity)
+    # Cosine distance: 0 (same) to 2 (opposite). approx sim = 1 / (1 + dist)
+    vec_score = 0.0
+    if hit.get("dist") is not None:
+         vec_score = 1.0 / (1.0 + float(hit["dist"]))
+
+    # 2. Title Score
+    title_score = 0.0
+    title_lower = hit["title"].lower()
+    match_count = sum(1 for k in keywords if k.lower() in title_lower)
+    if keywords:
+        title_score = match_count / len(keywords)
+    
+    # 3. Lexical Score (Keyword Density in Content)
+    # Already partially calculated in lex_score for lexical hits, but recalculate for vector hits
+    lex_raw = hit.get("lex_score", 0.0)
+    if lex_raw == 0.0 and hit.get("content"):
+        content_lower = hit["content"].lower()
+        lex_raw = sum(content_lower.count(k.lower()) for k in keywords)
+    
+    # Normalize lex_score roughly (e.g. 5 keywords match = 1.0)
+    lex_score = min(lex_raw / 5.0, 1.0)
+    
+    final_score = (w_vec * vec_score) + (w_title * title_score) + (w_lex * lex_score)
+    return float(final_score)

@@ -13,6 +13,7 @@ def retrieve_wiki_context(
     max_chars: int = 4200,
     page_limit: int = 8,
     embed_missing: bool = False,
+    search_mode: str = "auto",
 ) -> dict[str, Any]:
     pack = retrieve_wiki_hits(
         db,
@@ -23,6 +24,7 @@ def retrieve_wiki_context(
         embed_missing=embed_missing,
         max_chars=max_chars,
         page_ids=page_ids,
+        search_mode=search_mode,
     )
 
     sources = []
@@ -39,4 +41,9 @@ def retrieve_wiki_context(
             }
         )
 
-    return {"sources": sources, "context": pack.get("context", "")}
+    return {
+        "sources": sources,
+        "context": pack.get("context", ""),
+        "debug": pack.get("debug"),
+        "prompt_context": pack.get("prompt_context"),
+    }

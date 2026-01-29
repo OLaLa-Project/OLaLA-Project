@@ -23,12 +23,15 @@ type RagSearchCandidate = {
   title: string;
 };
 
+type RagSearchMode = "fts" | "lexical" | "vector";
+
 type RagSearchHit = {
   title: string;
   page_id: number;
   chunk_id: number;
   chunk_idx: number;
   content: string;
+  cleaned_content?: string;
   snippet: string;
   dist: number;
 };
@@ -37,6 +40,11 @@ type RagSearchResult = {
   question: string;
   candidates: RagSearchCandidate[];
   hits: RagSearchHit[];
+  debug?: {
+    keywords_used?: string[];
+    normalized_query?: string;
+  } | null;
+  prompt_context?: string | null;
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
@@ -54,6 +62,11 @@ const RAG_MAX_CHARS = 4200;
 const RAG_WINDOW = 2;
 const RAG_PAGE_LIMIT = 8;
 const RAG_EMBED_MISSING = true;
+const RAG_MODES: { id: RagSearchMode; label: string }[] = [
+  { id: "vector", label: "Vector" },
+  { id: "fts", label: "FTS" },
+  { id: "lexical", label: "Lexical" },
+];
 
 function formatBytes(bytes: number | null | undefined) {
   if (bytes === null || bytes === undefined) return "--";
@@ -74,30 +87,42 @@ async function apiGet(path: string) {
   return res.json();
 }
 
-async function apiPost(path: string, payload: unknown) {
+async function apiPost(
+  path: string,
+  payload: unknown,
+  options?: { signal?: AbortSignal }
+) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal: options?.signal,
   });
   if (!res.ok) throw new Error(`POST ${path} failed`);
   return res.json();
 }
 
-async function fetchRagSearch(question: string): Promise<RagSearchResult> {
+async function fetchRagSearch(
+  question: string,
+  searchMode: RagSearchMode,
+  signal?: AbortSignal
+): Promise<RagSearchResult> {
   const data = await apiPost("/api/wiki/search", {
     question,
     top_k: RAG_TOPK,
     window: RAG_WINDOW,
     page_limit: RAG_PAGE_LIMIT,
     embed_missing: RAG_EMBED_MISSING,
-  });
+    search_mode: searchMode,
+  }, { signal });
 
   if (Array.isArray(data?.candidates) && Array.isArray(data?.hits)) {
     return {
       question: data.question ?? question,
       candidates: data.candidates,
       hits: data.hits,
+      debug: data.debug ?? null,
+      prompt_context: data.prompt_context ?? null,
     };
   }
 
@@ -120,6 +145,8 @@ async function fetchRagSearch(question: string): Promise<RagSearchResult> {
     question: data.question ?? question,
     candidates,
     hits,
+    debug: data.debug ?? null,
+    prompt_context: data.prompt_context ?? null,
   };
 }
 
@@ -138,6 +165,8 @@ function DemoPage() {
   const [activeModel, setActiveModel] = useState("");
   const [pullInput, setPullInput] = useState("");
   const [pullStatus, setPullStatus] = useState("");
+  const [searchMode, setSearchMode] = useState<RagSearchMode>("vector");
+  const [showPromptContext, setShowPromptContext] = useState(false);
   const [ollamaStatus, setOllamaStatus] = useState("");
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
@@ -246,6 +275,7 @@ function DemoPage() {
         top_k: RAG_TOPK,
         max_chars: RAG_MAX_CHARS,
         page_ids: pageIds,
+        search_mode: searchMode,
       }),
       signal,
     });
@@ -340,6 +370,7 @@ function DemoPage() {
   }
 
   async function sendPrompt() {
+    if (streaming) return;
     const model = getActiveModel();
     const question = prompt.trim();
     if (!model || !question) return;
@@ -351,10 +382,15 @@ function DemoPage() {
     setStreaming(true);
     setLastPrompt(question);
     setRagSearchResult(null);
+    setShowPromptContext(false);
     try {
       if (useRag) {
         try {
-          const searchResult = await fetchRagSearch(question);
+          const searchResult = await fetchRagSearch(
+            question,
+            searchMode,
+            controllerRef.current.signal
+          );
           setRagSearchResult(searchResult);
         } catch (err) {
           setRagSearchResult(null);
@@ -641,6 +677,22 @@ function DemoPage() {
               <span className="toggle-track"></span>
               <span className="toggle-label">RAG</span>
             </label>
+            <div className="row">
+              {RAG_MODES.map((mode) => (
+                <button
+                  key={mode.id}
+                  className={`pill ${searchMode === mode.id ? "" : "ghost"}`}
+                  onClick={() => setSearchMode(mode.id)}
+                  disabled={!useRag}
+                  type="button"
+                >
+                  {mode.label}
+                </button>
+              ))}
+              <div className="hint">
+                mode: {useRag ? searchMode : "off"}
+              </div>
+            </div>
             <button
               className="pill ghost"
               onClick={() => {
@@ -705,6 +757,12 @@ function DemoPage() {
               <>
                 <div className="label">Question</div>
                 <div className="hint">{ragSearchResult.question}</div>
+                <div className="label">Search keywords</div>
+                <div className="hint">
+                  {(ragSearchResult.debug?.keywords_used?.length ?? 0)
+                    ? ragSearchResult.debug?.keywords_used?.join(", ")
+                    : "-"}
+                </div>
                 <div className="label">Candidates</div>
                 <div className="sources">
                   {(ragSearchResult?.candidates?.length ?? 0) ? (
@@ -727,7 +785,8 @@ function DemoPage() {
                           {hit.title} | chunk {hit.chunk_idx}
                         </div>
                         <div className="source-meta">
-                          page {hit.page_id} | dist {hit.dist.toFixed(4)}
+                          page {hit.page_id} | dist{" "}
+                          {typeof hit.dist === "number" ? hit.dist.toFixed(4) : "-"}
                         </div>
                         <div className="source-snippet">{hit.snippet}</div>
                         <div className="source-snippet" style={{ whiteSpace: "pre-wrap" }}>
@@ -737,6 +796,39 @@ function DemoPage() {
                     ))
                   ) : (
                     <div className="hint">No hits returned</div>
+                  )}
+                </div>
+                <div className="label">Prompt context (cleaned)</div>
+                <div className="sources">
+                  {ragSearchResult.prompt_context ? (
+                    <>
+                      <div className="row">
+                        <button
+                          className="pill ghost"
+                          type="button"
+                          onClick={() => setShowPromptContext((prev) => !prev)}
+                        >
+                          {showPromptContext ? "Hide prompt context" : "Show prompt context"}
+                        </button>
+                        <div className="hint">
+                          chars: {ragSearchResult.prompt_context.length}
+                        </div>
+                      </div>
+                      {showPromptContext ? (
+                        <div className="source-item">
+                          <div
+                            className="source-snippet"
+                            style={{ whiteSpace: "pre-wrap", maxHeight: 320, overflow: "auto" }}
+                          >
+                            {ragSearchResult.prompt_context}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="hint">Hidden</div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="hint">No prompt context yet</div>
                   )}
                 </div>
               </>
@@ -752,6 +844,8 @@ function DemoPage() {
             ragMeta ? (
               <>
                 <div>RAG mode: {ragMeta.mode || "-"}</div>
+                <div>search_mode: {ragMeta.search_mode || "-"}</div>
+                {ragMeta.lexical_mode ? <div>lexical_mode: {ragMeta.lexical_mode}</div> : null}
                 <div>hits: {ragMeta.hits ?? "-"}</div>
                 <div>top_k: {ragMeta.top_k ?? "-"}</div>
                 <div>max_chars: {ragMeta.max_chars ?? "-"}</div>
