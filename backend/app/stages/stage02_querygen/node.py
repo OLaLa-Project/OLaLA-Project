@@ -104,6 +104,63 @@ Context Hints: {context_str}
     return parsed
 
 
+def _render_prompt_template(template: str, state: Dict[str, Any]) -> str:
+    evidence = state.get("canonical_evidence", {}) or {}
+    user_request = state.get("user_request", "")
+    title = evidence.get("article_title", "") or ""
+    article_text = evidence.get("fetched_content", "") or evidence.get("snippet", "") or ""
+    rendered = template
+    rendered = rendered.replace("{{user_request}}", user_request)
+    rendered = rendered.replace("{{title}}", title)
+    rendered = rendered.replace("{{article_text}}", article_text)
+    return rendered
+
+
+def generate_queries_with_prompt_override(
+    state: Dict[str, Any],
+    template: str,
+) -> Dict[str, Any]:
+    prompt = _render_prompt_template(template, state)
+    response = call_slm("", prompt)
+    parsed = parse_json_safe(response)
+    if parsed is None:
+        retry_prompt = (
+            "이전 응답이 유효한 JSON이 아닙니다. 반드시 유효한 JSON만 출력하세요. "
+            "다른 설명 없이 JSON만 출력하세요."
+        )
+        response = call_slm(retry_prompt, prompt)
+        parsed = parse_json_safe(response)
+    if parsed is None:
+        raise ValueError(f"JSON 파싱 최종 실패: {response[:200]}")
+    parsed["_prompt_used"] = prompt
+    return parsed
+
+
+def _query_variants_from_team_a(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+    claims = parsed.get("claims") or parsed.get("주장들") or []
+    variants: List[Dict[str, Any]] = []
+    for claim in claims:
+        query_pack = claim.get("query_pack") or {}
+        wiki_db = query_pack.get("wiki_db") if isinstance(query_pack, dict) else None
+        news_search = query_pack.get("news_search") if isinstance(query_pack, dict) else None
+        if isinstance(wiki_db, dict):
+            wiki_db = [wiki_db]
+        if isinstance(news_search, str):
+            news_search = [news_search]
+        for item in wiki_db or []:
+            if isinstance(item, dict):
+                q = str(item.get("q") or "").strip()
+            else:
+                q = str(item or "").strip()
+            if q:
+                variants.append({"type": "wiki", "text": q})
+        for q in news_search or []:
+            q = str(q).strip()
+            if q:
+                variants.append({"type": "news", "text": q})
+    return variants
+
+
 def postprocess_queries(
     parsed: Dict[str, Any],
     claim: str,
@@ -189,9 +246,24 @@ def run(state: dict) -> dict:
         return state
 
     try:
-        # LLM 기반 쿼리 생성
-        parsed = generate_queries_with_llm(claim_text, context)
-        result = postprocess_queries(parsed, claim_text)
+        # LLM 기반 쿼리 생성 (override prompt 지원)
+        prompt_override = state.get("querygen_prompt") or ""
+        if prompt_override.strip():
+            parsed = generate_queries_with_prompt_override(state, prompt_override)
+            variants = _query_variants_from_team_a(parsed)
+            if variants:
+                result = {
+                    "query_variants": variants,
+                    "keyword_bundles": parsed.get("keyword_bundles", {"primary": [], "secondary": []}),
+                    "search_constraints": parsed.get("search_constraints", {}),
+                }
+                state["querygen_claims"] = parsed.get("claims") or parsed.get("주장들") or []
+                state["querygen_prompt_used"] = parsed.get("_prompt_used")
+            else:
+                result = postprocess_queries(parsed, claim_text)
+        else:
+            parsed = generate_queries_with_llm(claim_text, context)
+            result = postprocess_queries(parsed, claim_text)
 
         logger.info(
             f"[{trace_id}] Stage2 LLM 완료: "

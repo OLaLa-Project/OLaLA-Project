@@ -74,7 +74,8 @@ class SLMClient:
         Raises:
             SLMError: API 호출 실패 시
         """
-        url = f"{self.config.base_url.rstrip('/')}/chat/completions"
+        base = self.config.base_url.rstrip("/")
+        url = f"{base}/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}",
@@ -91,18 +92,38 @@ class SLMClient:
 
         logger.debug(f"SLM 호출: model={self.config.model}, max_tokens={payload['max_tokens']}")
 
-        try:
-            response = requests.post(
-                url,
+        def _post_json(post_url: str, post_payload: dict) -> requests.Response:
+            return requests.post(
+                post_url,
                 headers=headers,
-                json=payload,
+                json=post_payload,
                 timeout=self.config.timeout,
             )
+
+        try:
+            response = _post_json(url, payload)
+            if response.status_code == 404 and "/v1" in base:
+                # Ollama 기본 엔드포인트 fallback
+                ollama_url = base.replace("/v1", "/api/generate")
+                ollama_payload = {
+                    "model": self.config.model,
+                    "prompt": user_prompt,
+                    "system": system_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature if temperature is not None else self.config.temperature,
+                        "num_predict": max_tokens or self.config.max_tokens,
+                    },
+                }
+                response = _post_json(ollama_url, ollama_payload)
             response.raise_for_status()
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
+            if "choices" in data:
+                content = data["choices"][0]["message"]["content"]
+            else:
+                content = data.get("response", "")
             logger.debug(f"SLM 응답 길이: {len(content)} chars")
-            return content.strip()
+            return (content or "").strip()
 
         except requests.exceptions.Timeout:
             logger.error(f"SLM 타임아웃: {self.config.timeout}초 초과")

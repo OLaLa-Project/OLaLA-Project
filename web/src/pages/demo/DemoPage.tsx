@@ -47,7 +47,13 @@ type RagSearchResult = {
   prompt_context?: string | null;
 };
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const envBase = (import.meta.env.VITE_API_BASE_URL || "").trim();
+const inferredBase = `${window.location.protocol}//${window.location.hostname}:8000`;
+const shouldOverride =
+  envBase &&
+  /(localhost|127\.0\.0\.1)/.test(envBase) &&
+  !/(localhost|127\.0\.0\.1)/.test(window.location.hostname);
+const API_BASE = (shouldOverride ? inferredBase : envBase || inferredBase).replace(/\/$/, "");
 
 const recommended = [
   { name: "llama3.2:3b", note: "balanced" },

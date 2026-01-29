@@ -54,6 +54,14 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-olala}
       OLLAMA_URL: http://ollama:11434
+      SLM_BASE_URL: ${SLM_BASE_URL:-http://ollama:11434/v1}
+      SLM_API_KEY: ${SLM_API_KEY:-ollama}
+      SLM_MODEL: ${SLM_MODEL:-gemma3:4b}
+      SLM_TIMEOUT_SECONDS: ${SLM_TIMEOUT_SECONDS:-60}
+      SLM_MAX_TOKENS: ${SLM_MAX_TOKENS:-1024}
+      SLM_TEMPERATURE: ${SLM_TEMPERATURE:-0.2}
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
       LOG_DIR: /app/logs
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:

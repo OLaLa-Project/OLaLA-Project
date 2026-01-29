@@ -1,7 +1,31 @@
-from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List, TypedDict
+from typing_extensions import Annotated
+import operator
 
-@dataclass
-class GraphState:
+
+class GraphState(TypedDict, total=False):
     trace_id: str
-    data: Dict[str, Any]
+    input_type: str
+    input_payload: str
+    user_request: str
+    language: str
+    search_mode: str
+
+    claim_text: str
+    canonical_evidence: Dict[str, Any]
+    entity_map: Dict[str, Any]
+
+    query_variants: List[Dict[str, Any]]
+    keyword_bundles: Dict[str, Any]
+    search_constraints: Dict[str, Any]
+
+    search_queries: List[str]
+
+    evidence_candidates: List[Dict[str, Any]]
+    scored_evidence: List[Dict[str, Any]]
+    citations: List[Dict[str, Any]]
+    evidence_topk: List[Dict[str, Any]]
+    risk_flags: List[str]
+
+    stage_logs: Annotated[List[Dict[str, Any]], operator.add]
+    stage_outputs: Annotated[Dict[str, Any], operator.or_]

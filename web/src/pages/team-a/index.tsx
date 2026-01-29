@@ -42,7 +42,13 @@ type RetrieveResult = {
   }>;
 };
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const envBase = (import.meta.env.VITE_API_BASE_URL || "").trim();
+const inferredBase = `${window.location.protocol}//${window.location.hostname}:8000`;
+const shouldOverride =
+  envBase &&
+  /(localhost|127\.0\.0\.1)/.test(envBase) &&
+  !/(localhost|127\.0\.0\.1)/.test(window.location.hostname);
+const API_BASE = (shouldOverride ? inferredBase : envBase || inferredBase).replace(/\/$/, "");
 
 async function apiGet(path: string) {
   const res = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
@@ -162,7 +168,7 @@ function buildPrompt(userRequest: string, title: string, articleText: string) {
 
 function TeamAPage() {
   const [models, setModels] = useState<string[]>([]);
-  const [model, setModel] = useState("gemma2:2b");
+  const [model, setModel] = useState("gemma3:4B");
   const [searchMode, setSearchMode] = useState<SearchMode>("fts");
 
   const [userRequest, setUserRequest] = useState("");

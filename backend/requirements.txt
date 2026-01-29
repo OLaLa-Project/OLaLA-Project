@@ -9,3 +9,4 @@ psutil==5.9.8
 pgvector==0.3.6
 trafilatura>=1.6.0
 duckduckgo-search>=5.0.0
+langgraph>=0.0.40

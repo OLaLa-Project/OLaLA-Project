@@ -4,10 +4,11 @@ import { NAV_PAGES, type NavPage } from "./pages/nav";
 import PlatformPage from "./pages/platform";
 import TeamAPage from "./pages/team-a";
 import TeamBPage from "./pages/team-b";
+import LangGraphTestPage from "./pages/langgraph-test";
 
 function getHashPage(): NavPage {
   const hash = window.location.hash.replace("#", "").trim();
-  if (hash === "team-a" || hash === "team-b" || hash === "platform") return hash;
+  if (hash === "team-a" || hash === "team-b" || hash === "langgraph-test" || hash === "platform") return hash;
   return "demo";
 }
 
@@ -65,6 +66,7 @@ function App() {
           <main className="team-wrap">
             {page === "team-a" ? <TeamAPage /> : null}
             {page === "team-b" ? <TeamBPage /> : null}
+            {page === "langgraph-test" ? <LangGraphTestPage /> : null}
             {page === "platform" ? <PlatformPage /> : null}
           </main>
         )}

@@ -244,12 +244,17 @@ def run(state: dict) -> dict:
                 f"제목: {fetched['title'][:50]}"
             )
 
-        # ── 3. LLM 기반 주장 정규화 ──
-        claim_text = normalize_claim_with_llm(
-            user_input=snippet,
-            article_title=fetched["title"],
-            article_content=fetched["text"],
-        )
+        # ── 3. 주장 정규화 ──
+        normalize_mode = (state.get("normalize_mode") or "llm").lower()
+        if normalize_mode == "basic":
+            claim_text = normalize_text_basic(snippet) or normalize_text_basic(fetched["title"]) or "확인할 수 없는 주장"
+            logger.info(f"[{trace_id}] 기본 정규화 사용")
+        else:
+            claim_text = normalize_claim_with_llm(
+                user_input=snippet,
+                article_title=fetched["title"],
+                article_content=fetched["text"],
+            )
         logger.info(f"[{trace_id}] 정규화된 주장: {claim_text[:80]}")
 
         # ── 4. 부가 정보 추출 ──

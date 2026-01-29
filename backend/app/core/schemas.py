@@ -8,6 +8,12 @@ class TruthCheckRequest(BaseModel):
     user_request: Optional[str] = None
     as_of: Optional[str] = None
     language: Optional[str] = "ko"
+    start_stage: Optional[str] = None
+    end_stage: Optional[str] = None
+    querygen_prompt: Optional[str] = None
+    normalize_mode: Optional[Literal["llm", "basic"]] = None
+    stage_state: Optional[dict] = None
+    include_full_outputs: Optional[bool] = False
 
 
 class Citation(BaseModel):
@@ -35,6 +41,9 @@ class TruthCheckResponse(BaseModel):
     limitations: List[str] = Field(default_factory=list)
     recommended_next_steps: List[str] = Field(default_factory=list)
     risk_flags: List[str] = Field(default_factory=list)
+    stage_logs: List[dict] = Field(default_factory=list)
+    stage_outputs: dict = Field(default_factory=dict)
+    stage_full_outputs: dict = Field(default_factory=dict)
     model_info: ModelInfo
     latency_ms: int
     cost_usd: float

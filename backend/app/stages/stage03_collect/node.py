@@ -66,12 +66,15 @@ async def _search_naver(query: str) -> List[Dict[str, Any]]:
         return []
 
     try:
+        safe_query = (query or "").strip()
+        if len(safe_query) > 100:
+            safe_query = safe_query[:100]
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": client_id,
             "X-Naver-Client-Secret": client_secret
         }
-        params = {"query": query, "display": 5, "sort": "sim"}
+        params = {"query": safe_query, "display": 5, "sort": "sim"}
         
         # Offload sync HTTP request
         resp = await asyncio.to_thread(requests.get, url, headers=headers, params=params)
@@ -84,7 +87,7 @@ async def _search_naver(query: str) -> List[Dict[str, Any]]:
                 desc = item["description"].replace("<b>", "").replace("</b>", "").replace("&quot;", "\"")
                 
                 results.append({
-                    "source_type": "WEB",
+                    "source_type": "NEWS",
                     "title": title,
                     "url": item["link"],
                     "content": desc,
@@ -166,4 +169,3 @@ def run(state: dict) -> dict:
     logger.info(f"Stage 3 Complete. Collected {len(evidence_candidates)} candidates.")
     
     return state
-
