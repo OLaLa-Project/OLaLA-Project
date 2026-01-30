@@ -364,24 +364,9 @@ class LLMGateway(BaseGateway):
                 cause=e,
             )
 
-    @lru_cache(maxsize=4)
     def _load_verify_prompt(self, perspective: str) -> str:
-        """검증 프롬프트 로드 (캐싱)."""
-        # 프롬프트 파일 경로
-        prompt_dir = Path(__file__).parent / "prompts"
-
-        if perspective == "supportive":
-            prompt_file = prompt_dir / "supportive.txt"
-        elif perspective == "skeptical":
-            prompt_file = prompt_dir / "skeptical.txt"
-        else:
-            prompt_file = prompt_dir / "supportive.txt"
-
-        # 파일이 없으면 기본 프롬프트 반환
-        if not prompt_file.exists():
-            return self._get_default_verify_prompt(perspective)
-
-        return prompt_file.read_text(encoding="utf-8")
+        """검증 프롬프트 로드."""
+        return self._load_prompt(perspective)
 
     def _get_default_verify_prompt(self, perspective: str) -> str:
         """기본 검증 프롬프트."""
@@ -441,6 +426,481 @@ class LLMGateway(BaseGateway):
 위 증거를 바탕으로 분석하고, 지정된 JSON 형식으로 결과를 출력하세요.
 언어: {language}
 """
+
+    # ─────────────────────────────────────────────
+    # Stage 1: Normalize Claim
+    # ─────────────────────────────────────────────
+
+    def normalize_claim(
+        self,
+        user_input: str,
+        article_title: str = "",
+        article_content: str = "",
+        max_content_length: int = 1000,
+    ) -> str:
+        """
+        주장 정규화 (Stage 1).
+
+        사용자 입력과 기사 내용으로부터 핵심 주장 1문장을 추출합니다.
+
+        Args:
+            user_input: 사용자 입력 텍스트
+            article_title: 기사 제목
+            article_content: 기사 본문
+            max_content_length: 본문 최대 길이
+
+        Returns:
+            정규화된 주장 문장
+        """
+        system_prompt = self._load_prompt("normalize")
+        content_snippet = article_content[:max_content_length] if article_content else ""
+
+        user_prompt = f"""[사용자 입력]: {user_input}
+[기사 제목]: {article_title}
+[기사 본문(일부)]: {content_snippet}
+
+위 내용을 바탕으로 '검증해야 할 핵심 주장' 한 문장을 작성하라."""
+
+        def operation():
+            response = self._call_llm(system_prompt, user_prompt)
+            # 응답 정제
+            claim = response.strip().strip('"').strip("'")
+            return claim if claim else user_input
+
+        try:
+            return self.execute(operation, "normalize_claim")
+        except GatewayError as e:
+            logger.warning(f"Normalize failed, using fallback: {e}")
+            # Fallback: 기사 제목 > 사용자 입력
+            if article_title:
+                return article_title
+            return user_input or "확인할 수 없는 주장"
+
+    # ─────────────────────────────────────────────
+    # Stage 2: Query Generation
+    # ─────────────────────────────────────────────
+
+    def generate_queries(
+        self,
+        claim_text: str,
+        context: Optional[Dict[str, Any]] = None,
+        max_content_length: int = 1500,
+    ) -> Dict[str, Any]:
+        """
+        검색 쿼리 생성 (Stage 2).
+
+        정규화된 주장으로부터 다각도 검색 쿼리를 생성합니다.
+
+        Args:
+            claim_text: 정규화된 주장
+            context: canonical_evidence 컨텍스트
+            max_content_length: 컨텍스트 본문 최대 길이
+
+        Returns:
+            {
+                "core_fact": str,
+                "query_variants": [{"type": str, "text": str}, ...],
+                "keyword_bundles": {"primary": [...], "secondary": [...]},
+                "search_constraints": {...}
+            }
+        """
+        system_prompt = self._load_prompt("querygen")
+        context = context or {}
+
+        fetched_content = context.get("fetched_content", "")
+        has_article = bool(fetched_content)
+
+        if has_article:
+            truncated = fetched_content[:max_content_length]
+            context_str = json.dumps(
+                {k: v for k, v in context.items() if k != "fetched_content"},
+                ensure_ascii=False,
+                default=str,
+            )
+            user_prompt = f"""Input User Text: "{claim_text}"
+[첨부된 기사 내용 시작]
+{truncated}
+[첨부된 기사 내용 끝]
+
+Context Hints: {context_str}
+
+위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. 기사 내용이 있다면 기사의 핵심 주장을 최우선으로 반영하세요. `text` 필드는 절대 비워두면 안 됩니다."""
+        else:
+            context_str = json.dumps(context, ensure_ascii=False, default=str)
+            user_prompt = f"""Input Text: "{claim_text}"
+Context Hints: {context_str}
+
+위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. `text` 필드는 절대 비워두면 안 됩니다."""
+
+        def operation():
+            response = self._call_llm(system_prompt, user_prompt)
+            parsed = self._parse_json(response)
+            return self._postprocess_queries(parsed, claim_text)
+
+        try:
+            return self.execute(operation, "generate_queries")
+        except GatewayError as e:
+            logger.warning(f"Query generation failed, using fallback: {e}")
+            return self._generate_fallback_queries(claim_text)
+
+    def _postprocess_queries(
+        self,
+        parsed: Dict[str, Any],
+        claim_text: str,
+    ) -> Dict[str, Any]:
+        """LLM 출력 후처리: 빈 text 필드 보완, 기본 구조 보장."""
+        core_fact = parsed.get("core_fact") or claim_text
+
+        # query_variants 보완
+        variants = parsed.get("query_variants", [])
+        for q in variants:
+            if not q.get("text"):
+                qtype = q.get("type", "direct")
+                if qtype == "verification":
+                    q["text"] = f"{core_fact} 팩트체크"
+                elif qtype == "news":
+                    q["text"] = f"{core_fact} 뉴스"
+                elif qtype == "contradictory":
+                    q["text"] = f"{core_fact} 반박"
+                else:
+                    q["text"] = core_fact
+
+        # 최소 1개 쿼리 보장
+        if not variants:
+            variants = [{"type": "direct", "text": core_fact}]
+
+        return {
+            "core_fact": core_fact,
+            "query_variants": variants,
+            "keyword_bundles": parsed.get("keyword_bundles", {"primary": [], "secondary": []}),
+            "search_constraints": parsed.get("search_constraints", {}),
+        }
+
+    def _generate_fallback_queries(self, claim_text: str) -> Dict[str, Any]:
+        """LLM 실패 시 규칙 기반 쿼리 생성."""
+        words = claim_text.split()
+        keywords = [w for w in words if len(w) > 1]
+
+        variants = [
+            {"type": "direct", "text": claim_text},
+            {"type": "verification", "text": f"{claim_text} 팩트체크"},
+            {"type": "news", "text": f"{claim_text} 뉴스"},
+        ]
+
+        return {
+            "core_fact": claim_text,
+            "query_variants": variants,
+            "keyword_bundles": {
+                "primary": keywords[:3],
+                "secondary": keywords[3:6],
+            },
+            "search_constraints": {"note": "rule-based fallback"},
+        }
+
+    # ─────────────────────────────────────────────
+    # Stage 9: Judge Verdict
+    # ─────────────────────────────────────────────
+
+    def judge_verdict(
+        self,
+        claim_text: str,
+        draft_verdict: Dict[str, Any],
+        evidence_topk: List[Dict[str, Any]],
+        quality_score: int = 0,
+        language: str = "ko",
+    ) -> Dict[str, Any]:
+        """
+        최종 판정 및 사용자 친화적 결과 생성 (Stage 9).
+
+        draft_verdict를 바탕으로 사용자가 이해하기 쉬운 최종 결과물을 생성합니다.
+
+        Args:
+            claim_text: 검증 대상 주장
+            draft_verdict: Stage 8에서 생성된 초안 판정
+            evidence_topk: 원본 증거 리스트 (출처 정보)
+            quality_score: Stage 8에서 계산된 품질 점수
+            language: 언어 코드
+
+        Returns:
+            {
+                "verdict_label": "TRUE|FALSE|MIXED|UNVERIFIED",
+                "verdict_korean": "사실입니다|거짓입니다|...",
+                "confidence_percent": 85,
+                "headline": "한 줄 요약",
+                "explanation": "상세 설명",
+                "evidence_summary": [{"point": "...", "source_title": "...", "source_url": "..."}],
+                "cautions": ["주의사항"],
+                "recommendation": "추가 확인 권장 사항"
+            }
+        """
+        system_prompt = self._load_prompt("judge")
+        user_prompt = self._build_judge_user_prompt(
+            claim_text, draft_verdict, evidence_topk, quality_score, language
+        )
+
+        def operation():
+            response = self._call_llm(system_prompt, user_prompt)
+            parsed = self._parse_json(response)
+            return self._postprocess_judge_result(parsed, draft_verdict, evidence_topk, quality_score)
+
+        try:
+            return self.execute(operation, "judge_verdict")
+        except GatewayError as e:
+            logger.warning(f"Judge failed, using fallback: {e}")
+            return self._generate_fallback_judge(draft_verdict, evidence_topk, quality_score, str(e))
+
+    def _build_judge_user_prompt(
+        self,
+        claim_text: str,
+        draft_verdict: Dict[str, Any],
+        evidence_topk: List[Dict[str, Any]],
+        quality_score: int,
+        language: str,
+    ) -> str:
+        """Judge 사용자 프롬프트 생성."""
+        # draft_verdict 포맷팅
+        verdict_str = json.dumps(draft_verdict, ensure_ascii=False, indent=2)
+
+        # evidence 포맷팅 (간략화)
+        evidence_lines = []
+        for ev in evidence_topk[:5]:  # 최대 5개
+            evid_id = ev.get("evid_id", "unknown")
+            title = ev.get("title", "")
+            snippet = (ev.get("snippet") or ev.get("content", ""))[:300]
+            evidence_lines.append(f"[{evid_id}] {title}")
+            evidence_lines.append(f"  내용: {snippet}")
+            evidence_lines.append("")
+        evidence_str = "\n".join(evidence_lines) if evidence_lines else "(증거 없음)"
+
+        return f"""## 검증 대상 주장
+{claim_text}
+
+## 이전 단계 판정 결과 (draft_verdict)
+{verdict_str}
+
+## 원본 증거 (evidence_topk)
+{evidence_str}
+
+## 품질 점수 (Stage 8)
+{quality_score}/100
+
+## 요청
+위 정보를 바탕으로 최종 판정을 평가하고, 지정된 JSON 형식으로 결과를 출력하세요.
+언어: {language}
+"""
+
+    def _postprocess_judge_result(
+        self,
+        parsed: Dict[str, Any],
+        draft_verdict: Dict[str, Any],
+        evidence_topk: List[Dict[str, Any]],
+        quality_score: int,
+    ) -> Dict[str, Any]:
+        """Judge 결과 후처리 - 품질 평가 + 사용자 친화적 형식 보장."""
+        stance = draft_verdict.get("stance", "UNVERIFIED")
+        confidence = draft_verdict.get("confidence", 0.0)
+        citations_count = len(draft_verdict.get("citations", []))
+
+        # evaluation 필드 추출 (LLM이 반환한 품질 평가)
+        evaluation = parsed.get("evaluation", {})
+        hallucination_count = evaluation.get("hallucination_count", 0)
+        grounding_score = evaluation.get("grounding_score", 1.0)
+        is_consistent = evaluation.get("is_consistent", True)
+        policy_violations = evaluation.get("policy_violations", [])
+
+        # verdict_korean 매핑
+        verdict_korean_map = {
+            "TRUE": "사실입니다",
+            "FALSE": "거짓입니다",
+            "MIXED": "일부 사실입니다",
+            "UNVERIFIED": "확인이 어렵습니다",
+        }
+
+        # LLM 평가 기반 label 조정
+        verdict_label = parsed.get("verdict_label", stance)
+
+        # 품질 게이트 적용 (evaluation 결과 반영)
+        if quality_score < 65 or citations_count == 0:
+            verdict_label = "UNVERIFIED"
+            confidence = 0.0
+        elif hallucination_count >= 2 or grounding_score < 0.5:
+            verdict_label = "UNVERIFIED"
+            confidence = max(0.0, confidence * 0.5)
+        elif not is_consistent:
+            confidence = max(0.0, confidence * 0.7)
+
+        confidence_percent = parsed.get("confidence_percent", int(confidence * 100))
+
+        # risk_flags 결정 (LLM 결과 + 규칙 기반)
+        risk_flags = list(parsed.get("risk_flags", []))
+        if quality_score < 65:
+            if "QUALITY_GATE_FAILED" not in risk_flags:
+                risk_flags.append("QUALITY_GATE_FAILED")
+        if citations_count < 2 or grounding_score < 0.7:
+            if "LOW_EVIDENCE" not in risk_flags:
+                risk_flags.append("LOW_EVIDENCE")
+        if policy_violations:
+            if "POLICY_RISK" not in risk_flags:
+                risk_flags.append("POLICY_RISK")
+
+        # evidence_summary가 없으면 draft_verdict에서 생성
+        evidence_summary = parsed.get("evidence_summary", [])
+        if not evidence_summary:
+            evidence_summary = self._build_evidence_summary(draft_verdict, evidence_topk)
+
+        return {
+            # 품질 평가 결과
+            "evaluation": {
+                "hallucination_count": hallucination_count,
+                "grounding_score": grounding_score,
+                "is_consistent": is_consistent,
+                "policy_violations": policy_violations,
+            },
+            # 사용자 친화적 결과
+            "verdict_label": verdict_label,
+            "verdict_korean": parsed.get("verdict_korean", verdict_korean_map.get(verdict_label, "확인이 어렵습니다")),
+            "confidence_percent": confidence_percent,
+            "headline": parsed.get("headline", f"이 주장은 {confidence_percent}% 확률로 {verdict_korean_map.get(verdict_label, '확인이 어렵습니다')}"),
+            "explanation": parsed.get("explanation", ""),
+            "evidence_summary": evidence_summary,
+            "cautions": parsed.get("cautions", draft_verdict.get("weak_points", [])),
+            "recommendation": parsed.get("recommendation", ""),
+            "risk_flags": risk_flags,
+            # 내부용 메타데이터
+            "_quality_score": quality_score,
+            "_original_stance": stance,
+            "_original_confidence": confidence,
+        }
+
+    def _build_evidence_summary(
+        self,
+        draft_verdict: Dict[str, Any],
+        evidence_topk: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """draft_verdict에서 evidence_summary 생성."""
+        evidence_map = {ev.get("evid_id", ""): ev for ev in evidence_topk}
+        citations = draft_verdict.get("citations", [])
+        reasoning = draft_verdict.get("reasoning_bullets", [])
+
+        summary = []
+        for i, cit in enumerate(citations[:3]):  # 최대 3개
+            evid_id = cit.get("evid_id", "")
+            source_ev = evidence_map.get(evid_id, {})
+
+            # reasoning에서 해당 citation 관련 내용 찾기
+            point = ""
+            for r in reasoning:
+                if evid_id in r or (i == 0 and not point):
+                    # [시스템] 태그 제거
+                    point = r.replace("[지지]", "").replace("[반박]", "").strip()
+                    break
+
+            if not point and cit.get("quote"):
+                point = cit.get("quote", "")[:100]
+
+            summary.append({
+                "point": point or f"증거 {i+1}",
+                "source_title": source_ev.get("title", cit.get("title", "")),
+                "source_url": source_ev.get("url", cit.get("url", "")),
+            })
+
+        return summary
+
+    def _generate_fallback_judge(
+        self,
+        draft_verdict: Dict[str, Any],
+        evidence_topk: List[Dict[str, Any]],
+        quality_score: int,
+        error_msg: str,
+    ) -> Dict[str, Any]:
+        """Judge 실패 시 규칙 기반 fallback."""
+        stance = draft_verdict.get("stance", "UNVERIFIED")
+        confidence = draft_verdict.get("confidence", 0.0)
+        citations_count = len(draft_verdict.get("citations", []))
+
+        # 품질 게이트 적용
+        if quality_score < 65 or citations_count == 0:
+            stance = "UNVERIFIED"
+            confidence = 0.0
+
+        verdict_korean_map = {
+            "TRUE": "사실입니다",
+            "FALSE": "거짓입니다",
+            "MIXED": "일부 사실입니다",
+            "UNVERIFIED": "확인이 어렵습니다",
+        }
+
+        confidence_percent = int(confidence * 100)
+        verdict_korean = verdict_korean_map.get(stance, "확인이 어렵습니다")
+
+        # risk_flags 결정
+        risk_flags = ["LLM_JUDGE_FAILED"]
+        if quality_score < 65:
+            risk_flags.append("QUALITY_GATE_FAILED")
+        if citations_count < 2:
+            risk_flags.append("LOW_EVIDENCE")
+
+        return {
+            # 품질 평가 (fallback - LLM 평가 없음)
+            "evaluation": {
+                "hallucination_count": -1,  # -1: 평가 불가
+                "grounding_score": -1.0,
+                "is_consistent": None,
+                "policy_violations": [],
+            },
+            # 사용자 친화적 결과
+            "verdict_label": stance,
+            "verdict_korean": verdict_korean,
+            "confidence_percent": confidence_percent,
+            "headline": f"이 주장은 {confidence_percent}% 확률로 {verdict_korean}" if stance != "UNVERIFIED" else "이 주장은 현재 확인이 어렵습니다",
+            "explanation": f"시스템 오류로 인해 자동 분석이 제한되었습니다. ({error_msg[:50]})",
+            "evidence_summary": self._build_evidence_summary(draft_verdict, evidence_topk),
+            "cautions": ["시스템 오류로 인해 분석이 제한됨", "수동 검토가 권장됨"],
+            "recommendation": "이 결과는 자동 분석 시스템의 오류로 인해 제한적입니다. 직접 출처를 확인해 주세요.",
+            "risk_flags": risk_flags,
+            "_quality_score": quality_score,
+            "_original_stance": stance,
+            "_original_confidence": confidence,
+        }
+
+    # ─────────────────────────────────────────────
+    # Prompt Loading (통합)
+    # ─────────────────────────────────────────────
+
+    @lru_cache(maxsize=8)
+    def _load_prompt(self, prompt_type: str) -> str:
+        """프롬프트 로드 (캐싱)."""
+        prompt_dir = Path(__file__).parent / "prompts"
+
+        prompt_files = {
+            "normalize": "normalize.txt",
+            "querygen": "querygen.txt",
+            "supportive": "supportive.txt",
+            "skeptical": "skeptical.txt",
+            "judge": "judge.txt",
+        }
+
+        filename = prompt_files.get(prompt_type)
+        if not filename:
+            logger.warning(f"Unknown prompt type: {prompt_type}")
+            return ""
+
+        prompt_file = prompt_dir / filename
+        if not prompt_file.exists():
+            logger.warning(f"Prompt file not found: {prompt_file}")
+            return self._get_default_prompt(prompt_type)
+
+        return prompt_file.read_text(encoding="utf-8")
+
+    def _get_default_prompt(self, prompt_type: str) -> str:
+        """기본 프롬프트 반환."""
+        defaults = {
+            "normalize": "검증해야 할 핵심 주장을 한 문장으로 정리하세요.",
+            "querygen": "검증용 검색 쿼리를 JSON 형식으로 생성하세요.",
+            "supportive": self._get_default_verify_prompt("supportive"),
+            "skeptical": self._get_default_verify_prompt("skeptical"),
+        }
+        return defaults.get(prompt_type, "")
 
 
 # 전역 LLMGateway 인스턴스

@@ -13,7 +13,7 @@ PostgreSQL에 결과를 저장합니다.
 ## Stage 작업 위치
 - Stage1~5: `backend/app/stages/stage01_normalize` ~ `stage05_topk`
 - Stage6~8: `backend/app/stages/stage06_verify_support` ~ `stage08_aggregate`
-- Stage9~10: `backend/app/stages/stage09_judge`, `stage10_policy`
+- Stage9: `backend/app/stages/stage09_judge` (Final Verdict & Quality Gate)
 
 ## 실행 방법
 ```bash
