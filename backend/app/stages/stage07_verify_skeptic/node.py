@@ -58,7 +58,9 @@ def format_evidence_for_prompt(evidence_topk: list[dict]) -> str:
         evid_id = ev.get("evid_id", f"ev_{i}")
         title = ev.get("title", "제목 없음")
         url = ev.get("url", "")
-        snippet = truncate_snippet(ev.get("snippet", ""))
+        # snippet 우선, 없으면 content 사용 (하위 호환성)
+        text_content = ev.get("snippet") or ev.get("content", "")
+        snippet = truncate_snippet(text_content)
         source_type = ev.get("source_type", "WEB_URL")
 
         lines.append(f"[{evid_id}] ({source_type}) {title}")

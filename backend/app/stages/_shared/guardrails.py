@@ -103,11 +103,11 @@ def validate_citations(
     min_quote_length: int = 10,
 ) -> list[dict]:
     """
-    citations의 quote가 evidence_topk의 snippet에 실제 포함되는지 검증.
+    citations의 quote가 evidence_topk의 snippet/content에 실제 포함되는지 검증.
 
     Args:
         citations: 모델이 생성한 citation 리스트
-        evidence_topk: 원본 증거 리스트 (각 항목에 evid_id, snippet 포함)
+        evidence_topk: 원본 증거 리스트 (각 항목에 evid_id, snippet 또는 content 포함)
         min_quote_length: 최소 quote 길이 (너무 짧은 quote 제외)
 
     Returns:
@@ -117,12 +117,19 @@ def validate_citations(
         return []
 
     # evidence_topk를 evid_id로 인덱싱
+    # snippet과 content 모두 지원 (하위 호환성)
     evidence_map: dict[str, str] = {}
     for ev in evidence_topk:
         evid_id = ev.get("evid_id", "")
-        snippet = ev.get("snippet", "")
-        if evid_id and snippet:
-            evidence_map[evid_id] = snippet
+        # snippet 우선, 없으면 content 사용
+        text_content = ev.get("snippet") or ev.get("content", "")
+        if evid_id and text_content:
+            evidence_map[evid_id] = text_content
+
+    # evidence_map이 비어있으면 검증 불가능
+    if not evidence_map:
+        logger.warning("evidence_topk에서 evid_id/snippet을 찾을 수 없음")
+        return []
 
     validated = []
     for cit in citations:
@@ -143,13 +150,13 @@ def validate_citations(
             logger.debug(f"evid_id 불일치: {evid_id}")
             continue
 
-        # quote가 snippet의 substring인지 검증
-        snippet = evidence_map[evid_id]
+        # quote가 snippet/content의 substring인지 검증
+        source_text = evidence_map[evid_id]
         # 공백/줄바꿈 정규화 후 비교
         normalized_quote = normalize_whitespace(quote)
-        normalized_snippet = normalize_whitespace(snippet)
+        normalized_source = normalize_whitespace(source_text)
 
-        if normalized_quote in normalized_snippet:
+        if normalized_quote in normalized_source:
             validated.append(cit)
             logger.debug(f"Citation 검증 통과: evid_id={evid_id}")
         else:
