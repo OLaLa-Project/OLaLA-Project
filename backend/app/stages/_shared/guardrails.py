@@ -249,3 +249,64 @@ def build_draft_verdict(
     verdict = enforce_unverified_if_no_citations(verdict)
 
     return verdict
+
+
+# ---------------------------------------------------------------------------
+# Judge 전용 파서/검증 (Stage 9)
+# ---------------------------------------------------------------------------
+
+def parse_judge_json(text: str) -> dict:
+    """
+    Judge 응답 JSON 파싱 (Stage 9 전용).
+
+    - LLMGateway._parse_json과 동일한 추출 규칙 사용
+    - 파싱 실패 시 JSONParseError 발생
+    """
+    try:
+        extracted = extract_json_from_text(text)
+        return json.loads(extracted)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise JSONParseError(f"Judge JSON 파싱 실패: {e}")
+
+
+def parse_judge_json_with_retry(
+    call_fn: Callable[[], str],
+    max_retries: int = 0,
+    retry_system_prompt: str = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 유효한 JSON만 출력하세요. 다른 설명 없이 JSON만 출력하세요.",
+    retry_call_fn: Optional[Callable[[str], str]] = None,
+) -> dict:
+    """
+    Judge JSON 파싱 with (옵션) 재시도.
+
+    기본값 max_retries=0으로 LLMGateway.judge_verdict의 기본 동작(파싱 실패 시 즉시 실패)을 유지합니다.
+    """
+    attempt = 0
+    response = call_fn()
+    try:
+        return parse_judge_json(response)
+    except JSONParseError as e:
+        last_error = e
+
+    while attempt < max_retries:
+        attempt += 1
+        logger.info("Judge JSON 파싱 실패, 재시도")
+        if retry_call_fn:
+            response = retry_call_fn(retry_system_prompt)
+        else:
+            response = call_fn()
+        try:
+            return parse_judge_json(response)
+        except JSONParseError as e:
+            last_error = e
+
+    raise last_error
+
+
+def validate_judge_output(result: dict) -> dict:
+    """
+    Judge 출력 검증 (Stage 9 전용).
+
+    현재는 LLMGateway의 후처리 로직에 위임되며,
+    출력 내용을 변경하지 않습니다.
+    """
+    return result

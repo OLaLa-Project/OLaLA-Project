@@ -1,7 +1,7 @@
-"""
+﻿"""
 Stage 1 - Normalize (LLM-Enhanced)
 
-사용자 입력(텍스트/URL)을 정규화하여 검증 가능한 단일 주장(claim)으로 변환합니다.
+?ъ슜???낅젰(?띿뒪??URL)???뺢퇋?뷀븯??寃利?媛?ν븳 ?⑥씪 二쇱옣(claim)?쇰줈 蹂?섑빀?덈떎.
 
 Input state keys:
     - trace_id: str
@@ -11,10 +11,10 @@ Input state keys:
     - language: "ko" | "en" (default: "ko")
 
 Output state keys:
-    - claim_text: str (정규화된 주장 문장)
+    - claim_text: str (?뺢퇋?붾맂 二쇱옣 臾몄옣)
     - language: str
-    - canonical_evidence: dict (URL, 본문, 제목 등)
-    - entity_map: dict (추출된 엔티티)
+    - canonical_evidence: dict (URL, 蹂몃Ц, ?쒕ぉ ??
+    - entity_map: dict (異붿텧???뷀떚??
 """
 
 import re
@@ -25,36 +25,36 @@ from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse, urlunparse
 from functools import lru_cache
 
-from app.stages._shared.slm_client import call_slm, SLMError
+from app.stages._shared.slm_client import call_slm1, SLMError
 
 logger = logging.getLogger(__name__)
 
-# 프롬프트 파일 경로
+# ?꾨＼?꾪듃 ?뚯씪 寃쎈줈
 PROMPT_FILE = Path(__file__).parent / "prompt_normalize.txt"
 
-# 설정
+# ?ㅼ젙
 DEFAULT_LANGUAGE = "ko"
 MAX_CONTENT_LENGTH = 1000
 
 
 @lru_cache(maxsize=1)
 def load_system_prompt() -> str:
-    """시스템 프롬프트 로드 (캐싱)."""
+    """?쒖뒪???꾨＼?꾪듃 濡쒕뱶 (罹먯떛)."""
     return PROMPT_FILE.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
-# URL 처리
+# URL 泥섎━
 # ---------------------------------------------------------------------------
 
 def extract_url_from_text(text: str) -> str:
-    """텍스트에서 첫 번째 URL 추출."""
+    """?띿뒪?몄뿉??泥?踰덉㎏ URL 異붿텧."""
     match = re.search(r'https?://[^\s<>"\')\]]+', text)
     return match.group(0) if match else ""
 
 
 def normalize_url(url: str) -> Dict[str, Any]:
-    """URL 파싱 및 정규화."""
+    """URL ?뚯떛 諛??뺢퇋??"""
     if not url or not url.strip():
         return {"normalized_url": "", "is_valid": False, "domain": ""}
     try:
@@ -69,19 +69,19 @@ def normalize_url(url: str) -> Dict[str, Any]:
             "domain": parsed.netloc,
         }
     except Exception as e:
-        logger.warning(f"URL 파싱 실패: {e}")
+        logger.warning(f"URL ?뚯떛 ?ㅽ뙣: {e}")
         return {"normalized_url": url, "is_valid": False, "domain": ""}
 
 
 def fetch_url_content(url: str) -> Dict[str, str]:
     """
-    URL에서 기사 본문과 제목 추출 (trafilatura 사용).
-    trafilatura가 없으면 빈 결과 반환.
+    URL?먯꽌 湲곗궗 蹂몃Ц怨??쒕ぉ 異붿텧 (trafilatura ?ъ슜).
+    trafilatura媛 ?놁쑝硫?鍮?寃곌낵 諛섑솚.
     """
     try:
         import trafilatura
     except ImportError:
-        logger.warning("trafilatura 미설치 - URL 콘텐츠 추출 불가")
+        logger.warning("trafilatura 誘몄꽕移?- URL 肄섑뀗痢?異붿텧 遺덇?")
         return {"text": "", "title": ""}
 
     try:
@@ -98,29 +98,29 @@ def fetch_url_content(url: str) -> Dict[str, str]:
                 "title": getattr(result, "title", "") or (result.get("title", "") if isinstance(result, dict) else ""),
             }
     except Exception as e:
-        logger.warning(f"URL 콘텐츠 추출 실패 ({url}): {e}")
+        logger.warning(f"URL 肄섑뀗痢?異붿텧 ?ㅽ뙣 ({url}): {e}")
 
     return {"text": "", "title": ""}
 
 
 # ---------------------------------------------------------------------------
-# 텍스트 분석 유틸리티
+# ?띿뒪??遺꾩꽍 ?좏떥由ы떚
 # ---------------------------------------------------------------------------
 
 def detect_language(text: str) -> str:
-    """한국어/영어 간이 감지."""
+    """?쒓뎅???곸뼱 媛꾩씠 媛먯?."""
     if not text:
         return DEFAULT_LANGUAGE
-    korean = len(re.findall(r'[가-힣]', text))
+    korean = len(re.findall(r'[媛-??', text))
     english = len(re.findall(r'[a-zA-Z]', text))
     return "ko" if korean >= english else "en"
 
 
 def extract_temporal_info(text: str, timestamp: Optional[str] = None) -> Dict[str, Any]:
-    """텍스트에서 날짜/시간 패턴 추출."""
+    """?띿뒪?몄뿉???좎쭨/?쒓컙 ?⑦꽩 異붿텧."""
     patterns = [
-        r'\d{4}년\s*\d{1,2}월\s*\d{1,2}일',
-        r'\d{4}년\s*\d{1,2}월',
+        r'\d{4}??s*\d{1,2}??s*\d{1,2}??,
+        r'\d{4}??s*\d{1,2}??,
         r'\d{4}-\d{2}-\d{2}',
         r'\d{4}\.\d{2}\.\d{2}',
     ]
@@ -135,7 +135,7 @@ def extract_temporal_info(text: str, timestamp: Optional[str] = None) -> Dict[st
 
 
 def extract_entities(text: str) -> List[str]:
-    """간이 엔티티 추출 (고유명사 후보)."""
+    """媛꾩씠 ?뷀떚??異붿텧 (怨좎쑀紐낆궗 ?꾨낫)."""
     if not text:
         return []
     words = text.split()
@@ -144,14 +144,14 @@ def extract_entities(text: str) -> List[str]:
         w_clean = w.strip(".,!?\"'()[]")
         if len(w_clean) <= 1:
             continue
-        # 영문 대문자 시작 또는 한글
+        # ?곷Ц ?臾몄옄 ?쒖옉 ?먮뒗 ?쒓?
         if w_clean[0].isupper() or ('\uAC00' <= w_clean[0] <= '\uD7A3'):
             entities.append(w_clean)
     return list(set(entities))[:10]
 
 
 # ---------------------------------------------------------------------------
-# LLM 기반 주장 정규화
+# LLM 湲곕컲 二쇱옣 ?뺢퇋??
 # ---------------------------------------------------------------------------
 
 def normalize_claim_with_llm(
@@ -160,56 +160,56 @@ def normalize_claim_with_llm(
     article_content: str,
 ) -> str:
     """
-    SLM을 사용해 사용자 입력 + 기사 내용으로부터 핵심 주장 1문장을 추출.
-    실패 시 fallback 전략 적용.
+    SLM???ъ슜???ъ슜???낅젰 + 湲곗궗 ?댁슜?쇰줈遺???듭떖 二쇱옣 1臾몄옣??異붿텧.
+    ?ㅽ뙣 ??fallback ?꾨왂 ?곸슜.
     """
     system_prompt = load_system_prompt()
     content_snippet = article_content[:MAX_CONTENT_LENGTH] if article_content else ""
 
-    user_prompt = f"""[사용자 입력]: {user_input}
-[기사 제목]: {article_title}
-[기사 본문(일부)]: {content_snippet}
+    user_prompt = f"""[?ъ슜???낅젰]: {user_input}
+[湲곗궗 ?쒕ぉ]: {article_title}
+[湲곗궗 蹂몃Ц(?쇰?)]: {content_snippet}
 
-위 내용을 바탕으로 '검증해야 할 핵심 주장' 한 문장을 작성하라."""
+???댁슜??諛뷀깢?쇰줈 '寃利앺빐?????듭떖 二쇱옣' ??臾몄옣???묒꽦?섎씪."""
 
     try:
-        response = call_slm(system_prompt, user_prompt)
+        response = call_slm1(system_prompt, user_prompt)
         claim = response.strip().strip('"').strip("'")
         if claim:
             return claim
     except SLMError as e:
-        logger.warning(f"LLM 정규화 실패: {e}")
+        logger.warning(f"LLM ?뺢퇋???ㅽ뙣: {e}")
 
-    # Fallback: 기사 제목 > 사용자 입력 > 기본값
+    # Fallback: 湲곗궗 ?쒕ぉ > ?ъ슜???낅젰 > 湲곕낯媛?
     if article_title:
         return article_title
     if user_input:
-        # 기본 정규화: 공백 정리
+        # 湲곕낯 ?뺢퇋?? 怨듬갚 ?뺣━
         return re.sub(r'\s+', ' ', user_input).strip()
-    return "확인할 수 없는 주장"
+    return "?뺤씤?????녿뒗 二쇱옣"
 
 
 # ---------------------------------------------------------------------------
-# 기본 정규화 (LLM 불필요한 경우)
+# 湲곕낯 ?뺢퇋??(LLM 遺덊븘?뷀븳 寃쎌슦)
 # ---------------------------------------------------------------------------
 
 def normalize_text_basic(text: str) -> str:
-    """기본 텍스트 정규화 (공백, 줄바꿈 정리)."""
+    """湲곕낯 ?띿뒪???뺢퇋??(怨듬갚, 以꾨컮轅??뺣━)."""
     normalized = text.strip()
     normalized = re.sub(r'\s+', ' ', normalized)
     return normalized
 
 
 # ---------------------------------------------------------------------------
-# 메인 실행
+# 硫붿씤 ?ㅽ뻾
 # ---------------------------------------------------------------------------
 
 def run(state: dict) -> dict:
     """
-    Stage 1 실행: 입력 정규화.
+    Stage 1 ?ㅽ뻾: ?낅젰 ?뺢퇋??
 
-    TruthCheckRequest 기반 state를 받아
-    claim_text, language, canonical_evidence, entity_map을 설정합니다.
+    TruthCheckRequest 湲곕컲 state瑜?諛쏆븘
+    claim_text, language, canonical_evidence, entity_map???ㅼ젙?⑸땲??
     """
     trace_id = state.get("trace_id", "unknown")
     input_type = state.get("input_type", "text")
@@ -217,53 +217,53 @@ def run(state: dict) -> dict:
     user_request = state.get("user_request", "")
     language = state.get("language", DEFAULT_LANGUAGE)
 
-    logger.info(f"[{trace_id}] Stage1 시작: type={input_type}, payload={input_payload[:80]}...")
+    logger.info(f"[{trace_id}] Stage1 ?쒖옉: type={input_type}, payload={input_payload[:80]}...")
 
     try:
-        # ── 1. 입력 분류 및 URL 추출 ──
+        # ?? 1. ?낅젰 遺꾨쪟 諛?URL 異붿텧 ??
         raw_text = input_payload
         url = ""
 
         if input_type == "url":
             url = input_payload
         else:
-            # 텍스트에서 URL 자동 추출
+            # ?띿뒪?몄뿉??URL ?먮룞 異붿텧
             url = extract_url_from_text(raw_text)
 
-        # user_request가 있으면 사용자의 원래 의도
+        # user_request媛 ?덉쑝硫??ъ슜?먯쓽 ?먮옒 ?섎룄
         snippet = user_request or raw_text
 
-        # ── 2. URL 처리 ──
+        # ?? 2. URL 泥섎━ ??
         url_info = normalize_url(url)
         fetched = {"text": "", "title": ""}
 
         if url_info["is_valid"]:
             fetched = fetch_url_content(url_info["normalized_url"])
             logger.info(
-                f"[{trace_id}] URL 콘텐츠: {len(fetched['text'])} chars, "
-                f"제목: {fetched['title'][:50]}"
+                f"[{trace_id}] URL 肄섑뀗痢? {len(fetched['text'])} chars, "
+                f"?쒕ぉ: {fetched['title'][:50]}"
             )
 
-        # ── 3. 주장 정규화 ──
+        # ?? 3. 二쇱옣 ?뺢퇋????
         normalize_mode = (state.get("normalize_mode") or "llm").lower()
         if normalize_mode == "basic":
-            claim_text = normalize_text_basic(snippet) or normalize_text_basic(fetched["title"]) or "확인할 수 없는 주장"
-            logger.info(f"[{trace_id}] 기본 정규화 사용")
+            claim_text = normalize_text_basic(snippet) or normalize_text_basic(fetched["title"]) or "?뺤씤?????녿뒗 二쇱옣"
+            logger.info(f"[{trace_id}] 湲곕낯 ?뺢퇋???ъ슜")
         else:
             claim_text = normalize_claim_with_llm(
                 user_input=snippet,
                 article_title=fetched["title"],
                 article_content=fetched["text"],
             )
-        logger.info(f"[{trace_id}] 정규화된 주장: {claim_text[:80]}")
+        logger.info(f"[{trace_id}] ?뺢퇋?붾맂 二쇱옣: {claim_text[:80]}")
 
-        # ── 4. 부가 정보 추출 ──
+        # ?? 4. 遺媛 ?뺣낫 異붿텧 ??
         target_text = snippet if snippet else fetched["text"]
         detected_lang = detect_language(claim_text)
         temporal = extract_temporal_info(target_text)
         entities = extract_entities(claim_text)
 
-        # ── 5. State 업데이트 ──
+        # ?? 5. State ?낅뜲?댄듃 ??
         state["claim_text"] = claim_text
         state["language"] = language or detected_lang
 
@@ -284,16 +284,17 @@ def run(state: dict) -> dict:
         }
 
         logger.info(
-            f"[{trace_id}] Stage1 완료: claim={claim_text[:50]}..., "
+            f"[{trace_id}] Stage1 ?꾨즺: claim={claim_text[:50]}..., "
             f"lang={state['language']}, entities={len(entities)}"
         )
 
     except Exception as e:
-        logger.exception(f"[{trace_id}] Stage1 오류: {e}")
-        # 에러 시에도 파이프라인이 계속 진행될 수 있도록 기본값 설정
-        state["claim_text"] = normalize_text_basic(input_payload) or "확인할 수 없는 주장"
+        logger.exception(f"[{trace_id}] Stage1 ?ㅻ쪟: {e}")
+        # ?먮윭 ?쒖뿉???뚯씠?꾨씪?몄씠 怨꾩냽 吏꾪뻾?????덈룄濡?湲곕낯媛??ㅼ젙
+        state["claim_text"] = normalize_text_basic(input_payload) or "?뺤씤?????녿뒗 二쇱옣"
         state["language"] = language or DEFAULT_LANGUAGE
         state["canonical_evidence"] = {}
         state["entity_map"] = {"extracted": [], "count": 0}
 
     return state
+

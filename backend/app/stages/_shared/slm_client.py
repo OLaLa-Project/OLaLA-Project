@@ -1,16 +1,16 @@
-"""
-SLM Client for OpenAI-compatible API (Ollama, vLLM 등).
+﻿"""
+SLM Client for OpenAI-compatible API (Ollama, vLLM ??.
 
-환경변수:
-    SLM_BASE_URL: SLM 서버 주소 (default: http://localhost:8001/v1)
-                  - 호스트 Ollama (Docker→호스트): http://host.docker.internal:11434/v1
-                  - 로컬 직접 실행: http://localhost:11434/v1
+?섍꼍蹂??
+    SLM_BASE_URL: SLM ?쒕쾭 二쇱냼 (default: http://localhost:8001/v1)
+                  - ?몄뒪??Ollama (Docker?믫샇?ㅽ듃): http://host.docker.internal:11434/v1
+                  - 濡쒖뺄 吏곸젒 ?ㅽ뻾: http://localhost:11434/v1
                   - vLLM: http://localhost:8001/v1
-    SLM_API_KEY: API 키 (default: local-slm-key, Ollama는 "ollama")
-    SLM_MODEL: 모델명 (default: slm, Ollama 예: gemma3:4b)
-    SLM_TIMEOUT_SECONDS: 타임아웃 (default: 60)
-    SLM_MAX_TOKENS: 최대 토큰 (default: 768)
-    SLM_TEMPERATURE: 온도 (default: 0.1)
+    SLM_API_KEY: API ??(default: local-slm-key, Ollama??"ollama")
+    SLM_MODEL: 紐⑤뜽紐?(default: slm, Ollama ?? gemma3:4b)
+    SLM_TIMEOUT_SECONDS: ??꾩븘??(default: 60)
+    SLM_MAX_TOKENS: 理쒕? ?좏겙 (default: 768)
+    SLM_TEMPERATURE: ?⑤룄 (default: 0.1)
 """
 
 import os
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SLMConfig:
-    """SLM 호출 설정."""
+    """SLM ?몄텧 ?ㅼ젙."""
     base_url: str
     api_key: str
     model: str
@@ -34,20 +34,28 @@ class SLMConfig:
     temperature: float
 
     @classmethod
-    def from_env(cls) -> "SLMConfig":
-        """환경변수에서 설정 로드."""
+    def from_env(cls, prefix: str = "SLM") -> "SLMConfig":
+        """?섍꼍蹂?섏뿉???ㅼ젙 濡쒕뱶."""
+        key = (prefix or "SLM").upper()
+        default_model = "slm"
+        if key == "SLM1":
+            default_model = "gemma3:4b"
+        elif key == "SLM2":
+            default_model = "Qwen3-4B"
+        def _get(name: str, default: str) -> str:
+            return os.getenv(f"{key}_{name}", default)
         return cls(
-            base_url=os.getenv("SLM_BASE_URL", "http://localhost:8001/v1"),
-            api_key=os.getenv("SLM_API_KEY", "local-slm-key"),
-            model=os.getenv("SLM_MODEL", "slm"),
-            timeout=int(os.getenv("SLM_TIMEOUT_SECONDS", "60")),
-            max_tokens=int(os.getenv("SLM_MAX_TOKENS", "768")),
-            temperature=float(os.getenv("SLM_TEMPERATURE", "0.1")),
+            base_url=_get("BASE_URL", "http://localhost:8001/v1"),
+            api_key=_get("API_KEY", "local-slm-key"),
+            model=_get("MODEL", default_model),
+            timeout=int(_get("TIMEOUT_SECONDS", "60")),
+            max_tokens=int(_get("MAX_TOKENS", "768")),
+            temperature=float(_get("TEMPERATURE", "0.1")),
         )
 
 
 class SLMClient:
-    """OpenAI-compatible API 클라이언트 (Ollama, vLLM 등)."""
+    """OpenAI-compatible API ?대씪?댁뼵??(Ollama, vLLM ??."""
 
     def __init__(self, config: Optional[SLMConfig] = None):
         self.config = config or SLMConfig.from_env()
@@ -60,19 +68,19 @@ class SLMClient:
         temperature: Optional[float] = None,
     ) -> str:
         """
-        Chat completion 호출.
+        Chat completion ?몄텧.
 
         Args:
-            system_prompt: 시스템 프롬프트 (역할 지정)
-            user_prompt: 사용자 프롬프트 (실제 태스크)
-            max_tokens: 최대 출력 토큰 (None이면 config 값 사용)
-            temperature: 온도 (None이면 config 값 사용)
+            system_prompt: ?쒖뒪???꾨＼?꾪듃 (??븷 吏??
+            user_prompt: ?ъ슜???꾨＼?꾪듃 (?ㅼ젣 ?쒖뒪??
+            max_tokens: 理쒕? 異쒕젰 ?좏겙 (None?대㈃ config 媛??ъ슜)
+            temperature: ?⑤룄 (None?대㈃ config 媛??ъ슜)
 
         Returns:
-            모델 응답 텍스트
+            紐⑤뜽 ?묐떟 ?띿뒪??
 
         Raises:
-            SLMError: API 호출 실패 시
+            SLMError: API ?몄텧 ?ㅽ뙣 ??
         """
         base = self.config.base_url.rstrip("/")
         url = f"{base}/chat/completions"
@@ -90,7 +98,7 @@ class SLMClient:
             "temperature": temperature if temperature is not None else self.config.temperature,
         }
 
-        logger.debug(f"SLM 호출: model={self.config.model}, max_tokens={payload['max_tokens']}")
+        logger.debug(f"SLM ?몄텧: model={self.config.model}, max_tokens={payload['max_tokens']}")
 
         def _post_json(post_url: str, post_payload: dict) -> requests.Response:
             return requests.post(
@@ -103,7 +111,7 @@ class SLMClient:
         try:
             response = _post_json(url, payload)
             if response.status_code == 404 and "/v1" in base:
-                # Ollama 기본 엔드포인트 fallback
+                # Ollama 湲곕낯 ?붾뱶?ъ씤??fallback
                 ollama_url = base.replace("/v1", "/api/generate")
                 ollama_payload = {
                     "model": self.config.model,
@@ -122,49 +130,58 @@ class SLMClient:
                 content = data["choices"][0]["message"]["content"]
             else:
                 content = data.get("response", "")
-            logger.debug(f"SLM 응답 길이: {len(content)} chars")
+            logger.debug(f"SLM ?묐떟 湲몄씠: {len(content)} chars")
             return (content or "").strip()
 
         except requests.exceptions.Timeout:
-            logger.error(f"SLM 타임아웃: {self.config.timeout}초 초과")
-            raise SLMError(f"SLM 호출 타임아웃 ({self.config.timeout}초)")
+            logger.error(f"SLM ??꾩븘?? {self.config.timeout}珥?珥덇낵")
+            raise SLMError(f"SLM ?몄텧 ??꾩븘??({self.config.timeout}珥?")
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"SLM 호출 실패: {e}")
-            raise SLMError(f"SLM 호출 실패: {e}")
+            logger.error(f"SLM ?몄텧 ?ㅽ뙣: {e}")
+            raise SLMError(f"SLM ?몄텧 ?ㅽ뙣: {e}")
 
         except (KeyError, IndexError) as e:
-            logger.error(f"SLM 응답 파싱 실패: {e}")
-            raise SLMError(f"SLM 응답 형식 오류: {e}")
+            logger.error(f"SLM ?묐떟 ?뚯떛 ?ㅽ뙣: {e}")
+            raise SLMError(f"SLM ?묐떟 ?뺤떇 ?ㅻ쪟: {e}")
 
 
 class SLMError(Exception):
-    """SLM 호출 관련 에러."""
+    """SLM ?몄텧 愿???먮윭."""
     pass
 
 
-# 모듈 레벨 편의 함수
-_default_client: Optional[SLMClient] = None
+# 紐⑤뱢 ?덈꺼 ?몄쓽 ?⑥닔
+_default_clients: dict[str, SLMClient] = {}
+
+def get_client(prefix: str = "SLM") -> SLMClient:
+    """?깃????대씪?댁뼵??諛섑솚."""
+    key = (prefix or "SLM").upper()
+    client = _default_clients.get(key)
+    if client is None:
+        client = SLMClient(SLMConfig.from_env(prefix=key))
+        _default_clients[key] = client
+    return client
 
 
-def get_client() -> SLMClient:
-    """싱글톤 클라이언트 반환."""
-    global _default_client
-    if _default_client is None:
-        _default_client = SLMClient()
-    return _default_client
-
-
-def call_slm(system_prompt: str, user_prompt: str, **kwargs) -> str:
+def call_slm(system_prompt: str, user_prompt: str, prefix: str = "SLM", **kwargs) -> str:
     """
-    편의 함수: SLM 호출.
+    ?몄쓽 ?⑥닔: SLM ?몄텧.
 
     Args:
-        system_prompt: 시스템 프롬프트
-        user_prompt: 사용자 프롬프트
-        **kwargs: 추가 옵션 (max_tokens, temperature)
+        system_prompt: ?쒖뒪???꾨＼?꾪듃
+        user_prompt: ?ъ슜???꾨＼?꾪듃
+        **kwargs: 異붽? ?듭뀡 (max_tokens, temperature)
 
     Returns:
-        모델 응답 텍스트
+        紐⑤뜽 ?묐떟 ?띿뒪??
     """
-    return get_client().chat_completion(system_prompt, user_prompt, **kwargs)
+    return get_client(prefix=prefix).chat_completion(system_prompt, user_prompt, **kwargs)
+
+def call_slm1(system_prompt: str, user_prompt: str, **kwargs) -> str:
+    """SLM1 ?몄텧 (Stage 1~2)."""
+    return call_slm(system_prompt, user_prompt, prefix="SLM1", **kwargs)
+
+def call_slm2(system_prompt: str, user_prompt: str, **kwargs) -> str:
+    """SLM2 ?몄텧 (Stage 6~7)."""
+    return call_slm(system_prompt, user_prompt, prefix="SLM2", **kwargs)

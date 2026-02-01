@@ -26,6 +26,12 @@ class GraphState(TypedDict, total=False):
     citations: List[Dict[str, Any]]
     evidence_topk: List[Dict[str, Any]]
     risk_flags: List[str]
+    verdict_support: Dict[str, Any]
+    verdict_skeptic: Dict[str, Any]
+    draft_verdict: Dict[str, Any]
+    quality_score: int
+    final_verdict: Dict[str, Any]
+    user_result: Dict[str, Any]
 
     stage_logs: Annotated[List[Dict[str, Any]], operator.add]
     stage_outputs: Annotated[Dict[str, Any], operator.or_]

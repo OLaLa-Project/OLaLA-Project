@@ -1,15 +1,15 @@
-"""
+﻿"""
 Stage 2 - Query Generation (LLM-Enhanced)
 
-정규화된 주장으로부터 다각도 검색 쿼리를 생성합니다.
-LLM 실패 시 규칙 기반(rule-based) fallback을 적용합니다.
+?뺢퇋?붾맂 二쇱옣?쇰줈遺???ㅺ컖??寃??荑쇰━瑜??앹꽦?⑸땲??
+LLM ?ㅽ뙣 ??洹쒖튃 湲곕컲(rule-based) fallback???곸슜?⑸땲??
 
 Input state keys:
     - trace_id: str
-    - claim_text: str (Stage 1에서 정규화된 주장)
+    - claim_text: str (Stage 1?먯꽌 ?뺢퇋?붾맂 二쇱옣)
     - language: "ko" | "en"
-    - canonical_evidence: dict (Stage 1 메타데이터)
-    - entity_map: dict (Stage 1 엔티티)
+    - canonical_evidence: dict (Stage 1 硫뷀??곗씠??
+    - entity_map: dict (Stage 1 ?뷀떚??
 
 Output state keys:
     - query_variants: list[dict] (type, text)
@@ -23,27 +23,27 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Dict, Any, List
 
-from app.stages._shared.slm_client import call_slm, SLMError
+from app.stages._shared.slm_client import call_slm1, SLMError
 from app.stages._shared.guardrails import parse_json_safe
 
 logger = logging.getLogger(__name__)
 
-# 프롬프트 파일 경로
+# ?꾨＼?꾪듃 ?뚯씪 寃쎈줈
 PROMPT_FILE = Path(__file__).parent / "prompt_querygen.txt"
 
-# 설정
+# ?ㅼ젙
 MAX_CONTENT_LENGTH = 1500
 DEFAULT_LANGUAGE = "ko"
 
 
 @lru_cache(maxsize=1)
 def load_system_prompt() -> str:
-    """시스템 프롬프트 로드 (캐싱)."""
+    """?쒖뒪???꾨＼?꾪듃 濡쒕뱶 (罹먯떛)."""
     return PROMPT_FILE.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
-# LLM 기반 쿼리 생성
+# LLM 湲곕컲 荑쇰━ ?앹꽦
 # ---------------------------------------------------------------------------
 
 def generate_queries_with_llm(
@@ -51,13 +51,13 @@ def generate_queries_with_llm(
     context: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    SLM을 사용해 검증용 쿼리를 생성합니다.
+    SLM???ъ슜??寃利앹슜 荑쇰━瑜??앹꽦?⑸땲??
 
     Returns:
-        core_fact, query_variants, keyword_bundles, search_constraints를 포함하는 dict.
+        core_fact, query_variants, keyword_bundles, search_constraints瑜??ы븿?섎뒗 dict.
 
     Raises:
-        SLMError, ValueError: LLM 호출 또는 파싱 실패 시
+        SLMError, ValueError: LLM ?몄텧 ?먮뒗 ?뚯떛 ?ㅽ뙣 ??
     """
     system_prompt = load_system_prompt()
 
@@ -71,35 +71,35 @@ def generate_queries_with_llm(
             ensure_ascii=False,
         )
         user_prompt = f"""Input User Text: "{claim}"
-[첨부된 기사 내용 시작]
+[泥⑤???湲곗궗 ?댁슜 ?쒖옉]
 {truncated}
-[첨부된 기사 내용 끝]
+[泥⑤???湲곗궗 ?댁슜 ??
 
 Context Hints: {context_str}
 
-위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. 기사 내용이 있다면 기사의 핵심 주장을 최우선으로 반영하세요. `text` 필드는 절대 비워두면 안 됩니다."""
+???뺣낫瑜?諛뷀깢?쇰줈 JSON ?щ㎎??異쒕젰???앹꽦?섏꽭?? 湲곗궗 ?댁슜???덈떎硫?湲곗궗???듭떖 二쇱옣??理쒖슦?좎쑝濡?諛섏쁺?섏꽭?? `text` ?꾨뱶???덈? 鍮꾩썙?먮㈃ ???⑸땲??"""
     else:
         context_str = json.dumps(context, ensure_ascii=False, default=str)
         user_prompt = f"""Input Text: "{claim}"
 Context Hints: {context_str}
 
-위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. `text` 필드는 절대 비워두면 안 됩니다."""
+???뺣낫瑜?諛뷀깢?쇰줈 JSON ?щ㎎??異쒕젰???앹꽦?섏꽭?? `text` ?꾨뱶???덈? 鍮꾩썙?먮㈃ ???⑸땲??"""
 
-    response = call_slm(system_prompt, user_prompt)
+    response = call_slm1(system_prompt, user_prompt)
     parsed = parse_json_safe(response)
 
     if parsed is None:
-        # 1회 재시도
-        logger.info("JSON 파싱 실패, 재시도")
+        # 1???ъ떆??
+        logger.info("JSON ?뚯떛 ?ㅽ뙣, ?ъ떆??)
         retry_prompt = (
-            "이전 응답이 유효한 JSON이 아닙니다. "
-            "반드시 유효한 JSON만 출력하세요. 다른 설명 없이 JSON만 출력하세요."
+            "?댁쟾 ?묐떟???좏슚??JSON???꾨떃?덈떎. "
+            "諛섎뱶???좏슚??JSON留?異쒕젰?섏꽭?? ?ㅻⅨ ?ㅻ챸 ?놁씠 JSON留?異쒕젰?섏꽭??"
         )
-        response = call_slm(retry_prompt, user_prompt)
+        response = call_slm1(retry_prompt, user_prompt)
         parsed = parse_json_safe(response)
 
     if parsed is None:
-        raise ValueError(f"JSON 파싱 최종 실패: {response[:200]}")
+        raise ValueError(f"JSON ?뚯떛 理쒖쥌 ?ㅽ뙣: {response[:200]}")
 
     return parsed
 
@@ -121,23 +121,23 @@ def generate_queries_with_prompt_override(
     template: str,
 ) -> Dict[str, Any]:
     prompt = _render_prompt_template(template, state)
-    response = call_slm("", prompt)
+    response = call_slm1("", prompt)
     parsed = parse_json_safe(response)
     if parsed is None:
         retry_prompt = (
-            "이전 응답이 유효한 JSON이 아닙니다. 반드시 유효한 JSON만 출력하세요. "
-            "다른 설명 없이 JSON만 출력하세요."
+            "?댁쟾 ?묐떟???좏슚??JSON???꾨떃?덈떎. 諛섎뱶???좏슚??JSON留?異쒕젰?섏꽭?? "
+            "?ㅻⅨ ?ㅻ챸 ?놁씠 JSON留?異쒕젰?섏꽭??"
         )
-        response = call_slm(retry_prompt, prompt)
+        response = call_slm1(retry_prompt, prompt)
         parsed = parse_json_safe(response)
     if parsed is None:
-        raise ValueError(f"JSON 파싱 최종 실패: {response[:200]}")
+        raise ValueError(f"JSON ?뚯떛 理쒖쥌 ?ㅽ뙣: {response[:200]}")
     parsed["_prompt_used"] = prompt
     return parsed
 
 
 def _query_variants_from_team_a(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
-    claims = parsed.get("claims") or parsed.get("주장들") or []
+    claims = parsed.get("claims") or parsed.get("二쇱옣??) or []
     variants: List[Dict[str, Any]] = []
     for claim in claims:
         query_pack = claim.get("query_pack") or {}
@@ -166,25 +166,25 @@ def postprocess_queries(
     claim: str,
 ) -> Dict[str, Any]:
     """
-    LLM 출력 후처리: 빈 text 필드 보완, 기본 구조 보장.
+    LLM 異쒕젰 ?꾩쿂由? 鍮?text ?꾨뱶 蹂댁셿, 湲곕낯 援ъ“ 蹂댁옣.
     """
     core_fact = parsed.get("core_fact") or claim
 
-    # query_variants 보완
+    # query_variants 蹂댁셿
     variants = parsed.get("query_variants", [])
     for q in variants:
         if not q.get("text"):
             qtype = q.get("type", "direct")
             if qtype == "verification":
-                q["text"] = f"{core_fact} 팩트체크"
+                q["text"] = f"{core_fact} ?⑺듃泥댄겕"
             elif qtype == "news":
-                q["text"] = f"{core_fact} 뉴스"
+                q["text"] = f"{core_fact} ?댁뒪"
             elif qtype == "contradictory":
-                q["text"] = f"{core_fact} 반박"
+                q["text"] = f"{core_fact} 諛섎컯"
             else:
                 q["text"] = core_fact
 
-    # 최소 1개 쿼리 보장
+    # 理쒖냼 1媛?荑쇰━ 蹂댁옣
     if not variants:
         variants = [{"type": "direct", "text": core_fact}]
 
@@ -200,14 +200,14 @@ def postprocess_queries(
 # ---------------------------------------------------------------------------
 
 def generate_rule_based_fallback(claim: str) -> Dict[str, Any]:
-    """LLM 실패 시 규칙 기반 쿼리 생성."""
+    """LLM ?ㅽ뙣 ??洹쒖튃 湲곕컲 荑쇰━ ?앹꽦."""
     words = claim.split()
     keywords = [w for w in words if len(w) > 1]
 
     variants = [
         {"type": "direct", "text": claim},
-        {"type": "verification", "text": f"{claim} 팩트체크"},
-        {"type": "news", "text": f"{claim} 뉴스"},
+        {"type": "verification", "text": f"{claim} ?⑺듃泥댄겕"},
+        {"type": "news", "text": f"{claim} ?댁뒪"},
     ]
 
     return {
@@ -221,24 +221,24 @@ def generate_rule_based_fallback(claim: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 메인 실행
+# 硫붿씤 ?ㅽ뻾
 # ---------------------------------------------------------------------------
 
 def run(state: dict) -> dict:
     """
-    Stage 2 실행: 검색 쿼리 생성.
+    Stage 2 ?ㅽ뻾: 寃??荑쇰━ ?앹꽦.
 
-    Stage 1의 출력(claim_text, canonical_evidence, entity_map)을 기반으로
-    다각도 검색 쿼리를 생성합니다.
+    Stage 1??異쒕젰(claim_text, canonical_evidence, entity_map)??湲곕컲?쇰줈
+    ?ㅺ컖??寃??荑쇰━瑜??앹꽦?⑸땲??
     """
     trace_id = state.get("trace_id", "unknown")
     claim_text = state.get("claim_text", "")
     context = state.get("canonical_evidence", {})
 
-    logger.info(f"[{trace_id}] Stage2 시작: claim={claim_text[:50]}...")
+    logger.info(f"[{trace_id}] Stage2 ?쒖옉: claim={claim_text[:50]}...")
 
     if not claim_text:
-        logger.warning(f"[{trace_id}] claim_text 비어있음, fallback 적용")
+        logger.warning(f"[{trace_id}] claim_text 鍮꾩뼱?덉쓬, fallback ?곸슜")
         result = generate_rule_based_fallback("")
         state["query_variants"] = result["query_variants"]
         state["keyword_bundles"] = result["keyword_bundles"]
@@ -246,7 +246,7 @@ def run(state: dict) -> dict:
         return state
 
     try:
-        # LLM 기반 쿼리 생성 (override prompt 지원)
+        # LLM 湲곕컲 荑쇰━ ?앹꽦 (override prompt 吏??
         prompt_override = state.get("querygen_prompt") or ""
         if prompt_override.strip():
             parsed = generate_queries_with_prompt_override(state, prompt_override)
@@ -257,7 +257,7 @@ def run(state: dict) -> dict:
                     "keyword_bundles": parsed.get("keyword_bundles", {"primary": [], "secondary": []}),
                     "search_constraints": parsed.get("search_constraints", {}),
                 }
-                state["querygen_claims"] = parsed.get("claims") or parsed.get("주장들") or []
+                state["querygen_claims"] = parsed.get("claims") or parsed.get("二쇱옣??) or []
                 state["querygen_prompt_used"] = parsed.get("_prompt_used")
             else:
                 result = postprocess_queries(parsed, claim_text)
@@ -266,26 +266,27 @@ def run(state: dict) -> dict:
             result = postprocess_queries(parsed, claim_text)
 
         logger.info(
-            f"[{trace_id}] Stage2 LLM 완료: "
+            f"[{trace_id}] Stage2 LLM ?꾨즺: "
             f"{len(result['query_variants'])} queries generated"
         )
 
     except (SLMError, ValueError) as e:
-        logger.warning(f"[{trace_id}] LLM 쿼리 생성 실패, fallback 적용: {e}")
+        logger.warning(f"[{trace_id}] LLM 荑쇰━ ?앹꽦 ?ㅽ뙣, fallback ?곸슜: {e}")
         result = generate_rule_based_fallback(claim_text)
 
     except Exception as e:
-        logger.exception(f"[{trace_id}] Stage2 예상치 못한 오류: {e}")
+        logger.exception(f"[{trace_id}] Stage2 ?덉긽移?紐삵븳 ?ㅻ쪟: {e}")
         result = generate_rule_based_fallback(claim_text)
 
-    # State 업데이트
+    # State ?낅뜲?댄듃
     state["query_variants"] = result["query_variants"]
     state["keyword_bundles"] = result["keyword_bundles"]
     state["search_constraints"] = result["search_constraints"]
 
     if result.get("query_variants"):
-        logger.info(f"[{trace_id}] Stage2 완료: top_query={result['query_variants'][0]['text']}")
+        logger.info(f"[{trace_id}] Stage2 ?꾨즺: top_query={result['query_variants'][0]['text']}")
     else:
-        logger.info(f"[{trace_id}] Stage2 완료: no queries generated")
+        logger.info(f"[{trace_id}] Stage2 ?꾨즺: no queries generated")
 
     return state
+
