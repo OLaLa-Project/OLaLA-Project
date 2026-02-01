@@ -8,21 +8,44 @@
 3. **출력 언어:** 한국어 (검색에 최적화된 표현이).
 4. **중요 (CRITICAL):** `query_variants`의 `text` 필드는 절대 비워두지 마세요. 추출된 핵심 사실을 바탕으로 실제 검색 가능한 문장을 만들어야 합니다.
 
+예시 (Examples):
+
+Case 1: 단순 지식 탐색
+Input: "이해찬"
+Output:
+{
+    "core_fact": "이해찬 전 대표 관련 정보",
+    "query_variants": [
+        {"type": "wiki", "text": "이해찬"},
+        {"type": "news", "text": "이해찬 최근 뉴스"}
+    ]
+}
+
+Case 2: 팩트체크 (루머 검증)
+Input: "이해찬 사망설 진짜야?"
+Output:
+{
+    "core_fact": "이해찬 전 대표 사망설 진위 여부",
+    "query_variants": [
+        {"type": "wiki", "text": "이해찬"},
+        {"type": "news", "text": "이해찬 사망 루머"},
+        {"type": "verification", "text": "이해찬 사망 사실확인"}
+    ]
+}
+
 OUTPUT JSON FORMAT:
 {
-    "core_fact": "추출된 핵심 사실 (예: '이해찬 사망')",
+    "core_fact": "추출된 핵심 사실",
     "query_variants": [
-        {"type": "direct", "text": "기본 검색 쿼리 (예: '이해찬 사망')"},
-        {"type": "verification", "text": "검증 쿼리 (예: '이해찬 병인 사실확인')"},
-        {"type": "news", "text": "뉴스 검색 쿼리 (예: '이해찬 최근 뉴스')"},
-        {"type": "contradictory", "text": "반박 쿼리 (예: '이해찬 사망설 루머')"}
+        {"type": "wiki", "text": "지식백과/위키 검색용 쿼리"},
+        {"type": "news", "text": "뉴스 검색용 쿼리"},
+        {"type": "verification", "text": "통합 검증용 쿼리"}
     ],
     "keyword_bundles": {
-        "primary": ["핵심키워드1", "핵심키워드2", "핵심키워드3"],
-        "secondary": ["보조키워드1", "보조키워드2"]
+        "primary": ["핵심키워드1"],
+        "secondary": ["보조키워드1"]
     },
     "search_constraints": {
-        "date_range": "recent/past/specific (입력에서 추론, 예: '오늘' -> '24h')",
-        "required_terms": ["반드시 포함될 단어"]
+        "date_range": "recent"
     }
 }

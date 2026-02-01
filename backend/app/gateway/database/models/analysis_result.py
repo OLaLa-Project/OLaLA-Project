@@ -1,7 +1,7 @@
 from sqlalchemy import Column, DateTime, Float, Integer, String, JSON
 from sqlalchemy.sql import func
 
-from app.db.session import Base
+from app.gateway.database.connection import Base
 
 
 class AnalysisResult(Base):

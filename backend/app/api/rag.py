@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.wiki_schemas import WikiSearchRequest
-from app.services.wiki_rag import retrieve_wiki_context
+from app.services.rag_usecase import retrieve_wiki_context
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434").rstrip("/")
 OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "60"))

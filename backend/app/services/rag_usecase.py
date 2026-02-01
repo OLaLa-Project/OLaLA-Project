@@ -1,21 +1,23 @@
-# backend/app/services/wiki_rag.py
-from typing import Any, Optional
+from typing import Any, Optional, List, Dict
 from sqlalchemy.orm import Session
-from app.services.wiki_retriever import retrieve_wiki_hits
+from app.services.wiki_usecase import retrieve_wiki_hits as _wiki_search
 
+# Currently wiki_rag.py just wrapped retrieve_wiki_hits and formatted sources.
+# migrating that logic here.
 
 def retrieve_wiki_context(
     db: Session,
     question: str,
     top_k: int = 8,
-    page_ids: Optional[list[int]] = None,
+    page_ids: Optional[List[int]] = None,
     window: int = 2,
     max_chars: int = 4200,
     page_limit: int = 8,
     embed_missing: bool = False,
     search_mode: str = "auto",
-) -> dict[str, Any]:
-    pack = retrieve_wiki_hits(
+) -> Dict[str, Any]:
+    
+    pack = _wiki_search(
         db,
         question=question,
         top_k=top_k,
@@ -45,5 +47,5 @@ def retrieve_wiki_context(
         "sources": sources,
         "context": pack.get("context", ""),
         "debug": pack.get("debug"),
-        "prompt_context": pack.get("prompt_context"),
+        "prompt_context": pack.get("context"), # simplified
     }

@@ -91,3 +91,38 @@ SourceTypeLiteral = Literal[
 LanguageLiteral = Literal["ko", "en"]
 
 StanceLiteral = Literal["TRUE", "FALSE", "MIXED", "UNVERIFIED", "REFUSED"]
+
+
+class SearchQueryType(str, Enum):
+    """
+    검색 쿼리 의도/타입.
+    Stage 2에서 생성하고 Stage 3에서 라우팅에 사용.
+    """
+    WIKI = "wiki"
+    """지식백과/문서 검색 (정밀 검증)"""
+    
+    NEWS = "news"
+    """뉴스/최신정보 검색 (시의성)"""
+    
+    WEB = "web"
+    """일반 웹 검색 (보조)"""
+    
+    DIRECT = "direct"
+    """직접/통합 검색 (기본)"""
+    
+    VERIFICATION = "verification"
+    """팩트체크용 검색 (검증/반박)"""
+
+
+from pydantic import BaseModel, Field
+
+class SearchQuery(BaseModel):
+    """
+    구조화된 검색 쿼리.
+    """
+    text: str = Field(..., description="검색어")
+    type: SearchQueryType = Field(default=SearchQueryType.DIRECT, description="쿼리 타입")
+    
+    def to_dict(self) -> dict:
+        return {"text": self.text, "type": self.type.value}
+

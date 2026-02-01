@@ -10,6 +10,10 @@ from app.stages.stage02_querygen.node import run as stage02_querygen
 from app.stages.stage03_collect.node import run as stage03_collect
 from app.stages.stage04_score.node import run as stage04_score
 from app.stages.stage05_topk.node import run as stage05_topk
+from app.stages.stage06_verify_support.node import run as stage06_verify_support
+from app.stages.stage07_verify_skeptic.node import run as stage07_verify_skeptic
+from app.stages.stage08_aggregate.node import run as stage08_aggregate
+from app.stages.stage09_judge.node import run as stage09_judge
 
 try:
     from langgraph.graph import StateGraph, END  # type: ignore
@@ -20,14 +24,19 @@ except Exception:  # pragma: no cover - optional dependency
 
 def _build_queries(state: Dict[str, Any]) -> Dict[str, Any]:
     variants = state.get("query_variants", [])
-    search_queries: List[str] = []
+    search_queries: List[Dict[str, Any]] = []
+    
     for v in variants:
         text = (v.get("text") or "").strip()
         if not text:
             continue
-        search_queries.append(text)
+        # Preserve full object (text, type)
+        search_queries.append(v)
+        
     if not search_queries and state.get("claim_text"):
-        search_queries = [state["claim_text"]]
+        # Fallback default type
+        search_queries = [{"text": state["claim_text"], "type": "direct"}]
+        
     return {"search_queries": search_queries}
 
 
@@ -65,7 +74,12 @@ def build_langgraph() -> Any:
     graph.add_node("adapter_queries", _with_log("adapter_queries", _build_queries))
     graph.add_node("stage03_collect", _with_log("stage03_collect", stage03_collect))
     graph.add_node("stage04_score", _with_log("stage04_score", stage04_score))
+
     graph.add_node("stage05_topk", _with_log("stage05_topk", stage05_topk))
+    graph.add_node("stage06_verify_support", _with_log("stage06_verify_support", stage06_verify_support))
+    graph.add_node("stage07_verify_skeptic", _with_log("stage07_verify_skeptic", stage07_verify_skeptic))
+    graph.add_node("stage08_aggregate", _with_log("stage08_aggregate", stage08_aggregate))
+    graph.add_node("stage09_judge", _with_log("stage09_judge", stage09_judge))
 
     graph.set_entry_point("stage01_normalize")
     graph.add_edge("stage01_normalize", "stage02_querygen")
@@ -73,7 +87,11 @@ def build_langgraph() -> Any:
     graph.add_edge("adapter_queries", "stage03_collect")
     graph.add_edge("stage03_collect", "stage04_score")
     graph.add_edge("stage04_score", "stage05_topk")
-    graph.add_edge("stage05_topk", END)
+    graph.add_edge("stage05_topk", "stage06_verify_support")
+    graph.add_edge("stage06_verify_support", "stage07_verify_skeptic")
+    graph.add_edge("stage07_verify_skeptic", "stage08_aggregate")
+    graph.add_edge("stage08_aggregate", "stage09_judge")
+    graph.add_edge("stage09_judge", END)
     return graph.compile()
 
 
@@ -84,6 +102,10 @@ STAGE_SEQUENCE = [
     ("stage03_collect", stage03_collect),
     ("stage04_score", stage04_score),
     ("stage05_topk", stage05_topk),
+    ("stage06_verify_support", stage06_verify_support),
+    ("stage07_verify_skeptic", stage07_verify_skeptic),
+    ("stage08_aggregate", stage08_aggregate),
+    ("stage09_judge", stage09_judge),
 ]
 
 STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
@@ -99,6 +121,10 @@ STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "stage03_collect": ["evidence_candidates"],
     "stage04_score": ["scored_evidence"],
     "stage05_topk": ["citations", "evidence_topk", "risk_flags"],
+    "stage06_verify_support": ["verdict_support"],
+    "stage07_verify_skeptic": ["verdict_skeptic"],
+    "stage08_aggregate": ["draft_verdict", "quality_score"],
+    "stage09_judge": ["final_verdict", "user_result", "risk_flags"],
 }
 
 
@@ -174,18 +200,27 @@ def run_pipeline(req: TruthCheckRequest) -> TruthCheckResponse:
         for c in out.get("citations", [])
     ]
 
-    label = "UNVERIFIED"
-    summary = "Stage5 완료. 증거 요약 필요."
+    # Final Mapping from Stage 9
+    final_verdict = out.get("final_verdict", {})
+    label = final_verdict.get("label", "UNVERIFIED")
+    confidence = final_verdict.get("confidence", 0.0)
+    summary = final_verdict.get("summary", "검증을 완료할 수 없습니다.")
+    rationale = final_verdict.get("rationale", [])
+    counter_evidence = final_verdict.get("counter_evidence", [])
+    limitations = final_verdict.get("limitations", [])
+    
+    # risk_flags 병합
+    risk_flags = list(set(out.get("risk_flags", []) + final_verdict.get("risk_flags", [])))
 
     return TruthCheckResponse(
         analysis_id=state["trace_id"],
         label=label,
-        confidence=0.0,
+        confidence=confidence,
         summary=summary,
-        rationale=[],
+        rationale=rationale,
         citations=citations,
-        counter_evidence=[],
-        limitations=[],
+        counter_evidence=counter_evidence,
+        limitations=limitations,
         recommended_next_steps=[],
         risk_flags=out.get("risk_flags", []),
         stage_logs=out.get("stage_logs", []),

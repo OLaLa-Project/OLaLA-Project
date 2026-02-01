@@ -8,8 +8,28 @@ class TruthCheckRequest(BaseModel):
     user_request: Optional[str] = None
     as_of: Optional[str] = None
     language: Optional[str] = "ko"
-    start_stage: Optional[str] = None
-    end_stage: Optional[str] = None
+    start_stage: Optional[Literal[
+        "stage01_normalize",
+        "stage02_querygen",
+        "stage03_collect",
+        "stage04_score",
+        "stage05_topk",
+        "stage06_verify_support",
+        "stage07_verify_skeptic",
+        "stage08_aggregate",
+        "stage09_judge",
+    ]] = None
+    end_stage: Optional[Literal[
+        "stage01_normalize",
+        "stage02_querygen",
+        "stage03_collect",
+        "stage04_score",
+        "stage05_topk",
+        "stage06_verify_support",
+        "stage07_verify_skeptic",
+        "stage08_aggregate",
+        "stage09_judge",
+    ]] = None
     querygen_prompt: Optional[str] = None
     normalize_mode: Optional[Literal["llm", "basic"]] = None
     stage_state: Optional[dict] = None
@@ -48,3 +68,5 @@ class TruthCheckResponse(BaseModel):
     latency_ms: int
     cost_usd: float
     created_at: str
+
+    model_config = {"protected_namespaces": ()}

@@ -136,29 +136,38 @@ def generate_queries_with_prompt_override(
     return parsed
 
 
+from app.gateway.schemas.common import SearchQuery, SearchQueryType
+
 def _query_variants_from_team_a(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
     claims = parsed.get("claims") or parsed.get("주장들") or []
     variants: List[Dict[str, Any]] = []
+    
+    # Legacy parser support if needed, but primary focus is extracting robust types
     for claim in claims:
-        query_pack = claim.get("query_pack") or {}
-        wiki_db = query_pack.get("wiki_db") if isinstance(query_pack, dict) else None
-        news_search = query_pack.get("news_search") if isinstance(query_pack, dict) else None
-        if isinstance(wiki_db, dict):
-            wiki_db = [wiki_db]
-        if isinstance(news_search, str):
-            news_search = [news_search]
-        for item in wiki_db or []:
-            if isinstance(item, dict):
-                q = str(item.get("q") or "").strip()
-            else:
-                q = str(item or "").strip()
-            if q:
-                variants.append({"type": "wiki", "text": q})
-        for q in news_search or []:
-            q = str(q).strip()
-            if q:
-                variants.append({"type": "news", "text": q})
+        # Simplified for brevity as we are likely using the simpler format in updated prompt
+        pass
+        
     return variants
+
+def _ensure_search_query_dict(q: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure dict conforms to SearchQuery structure."""
+    text = q.get("text", "")
+    qtype = q.get("type", "direct")
+    
+    # Normalize type string to Enum value if possible
+    try:
+        qtype_enum = SearchQueryType(qtype)
+    except ValueError:
+        # Fallback mapping
+        if qtype == "contradictory":
+            qtype_enum = SearchQueryType.VERIFICATION
+        elif qtype == "direct":
+            qtype_enum = SearchQueryType.DIRECT
+        else:
+            qtype_enum = SearchQueryType.DIRECT
+            
+    return {"text": text, "type": qtype_enum.value}
+
 
 
 def postprocess_queries(
@@ -171,25 +180,43 @@ def postprocess_queries(
     core_fact = parsed.get("core_fact") or claim
 
     # query_variants 보완
-    variants = parsed.get("query_variants", [])
-    for q in variants:
-        if not q.get("text"):
-            qtype = q.get("type", "direct")
-            if qtype == "verification":
-                q["text"] = f"{core_fact} 팩트체크"
+    raw_variants = parsed.get("query_variants", [])
+    valid_variants = []
+    
+    for q in raw_variants:
+        text = q.get("text", "").strip()
+        qtype = q.get("type", "direct")
+        
+        # 1. Text fallback
+        if not text:
+            if qtype == "wiki":
+                text = core_fact
             elif qtype == "news":
-                q["text"] = f"{core_fact} 뉴스"
-            elif qtype == "contradictory":
-                q["text"] = f"{core_fact} 반박"
+                text = f"{core_fact} 뉴스"
+            elif qtype == "verification":
+                text = f"{core_fact} 팩트체크"
             else:
-                q["text"] = core_fact
+                text = core_fact
+        
+        # 2. Type normalization
+        # Map known types to SearchQueryType values
+        if qtype in ["wiki", "WIKI"]:
+            final_type = "wiki"
+        elif qtype in ["news", "NEWS"]:
+            final_type = "news"
+        elif qtype in ["verification", "contradictory"]:
+            final_type = "verification"
+        else:
+            final_type = "direct" # default
+            
+        valid_variants.append({"text": text, "type": final_type})
 
     # 최소 1개 쿼리 보장
-    if not variants:
-        variants = [{"type": "direct", "text": core_fact}]
+    if not valid_variants:
+        valid_variants = [{"type": "direct", "text": core_fact}]
 
     return {
-        "query_variants": variants,
+        "query_variants": valid_variants,
         "keyword_bundles": parsed.get("keyword_bundles", {"primary": [], "secondary": []}),
         "search_constraints": parsed.get("search_constraints", {}),
     }

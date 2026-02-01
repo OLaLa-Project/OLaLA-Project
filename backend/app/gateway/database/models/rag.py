@@ -4,7 +4,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 
-from app.db.session import Base
+from app.gateway.database.connection import Base
 
 EMBED_DIM = int(os.getenv("EMBED_DIM", "768"))
 

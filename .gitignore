@@ -30,3 +30,5 @@ checkpoints/
 storage/
 *.sqlite
 *.db
+.wiki/
+.vscode/

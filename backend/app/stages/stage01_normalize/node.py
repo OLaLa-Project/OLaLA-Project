@@ -154,14 +154,16 @@ def extract_entities(text: str) -> List[str]:
 # LLM 기반 주장 정규화
 # ---------------------------------------------------------------------------
 
+from app.stages._shared.guardrails import parse_json_safe
+from app.gateway.schemas.normalization import NormalizedClaim
+
 def normalize_claim_with_llm(
     user_input: str,
     article_title: str,
     article_content: str,
-) -> str:
+) -> NormalizedClaim:
     """
-    SLM을 사용해 사용자 입력 + 기사 내용으로부터 핵심 주장 1문장을 추출.
-    실패 시 fallback 전략 적용.
+    SLM을 사용해 사용자 입력 + 기사 내용으로부터 정규화된 주장 및 의도를 추출.
     """
     system_prompt = load_system_prompt()
     content_snippet = article_content[:MAX_CONTENT_LENGTH] if article_content else ""
@@ -170,23 +172,34 @@ def normalize_claim_with_llm(
 [기사 제목]: {article_title}
 [기사 본문(일부)]: {content_snippet}
 
-위 내용을 바탕으로 '검증해야 할 핵심 주장' 한 문장을 작성하라."""
+위 내용을 바탕으로 JSON 포맷의 출력을 생성하세요."""
 
     try:
         response = call_slm(system_prompt, user_prompt)
-        claim = response.strip().strip('"').strip("'")
-        if claim:
-            return claim
+        parsed = parse_json_safe(response)
+        
+        if parsed:
+            # Pydantic validation
+            try:
+                return NormalizedClaim(**parsed)
+            except Exception as e:
+                logger.warning(f"NormalizedClaim 파싱 실패: {e}, raw={parsed}")
+                # Fallback to loose dictionary if schema mismatch, or fix fields
+                return NormalizedClaim(
+                    claim_text=parsed.get("claim_text") or article_title or user_input,
+                    original_intent=parsed.get("original_intent", "verification"),
+                    key_entities=parsed.get("key_entities", [])
+                )
     except SLMError as e:
         logger.warning(f"LLM 정규화 실패: {e}")
 
-    # Fallback: 기사 제목 > 사용자 입력 > 기본값
-    if article_title:
-        return article_title
-    if user_input:
-        # 기본 정규화: 공백 정리
-        return re.sub(r'\s+', ' ', user_input).strip()
-    return "확인할 수 없는 주장"
+    # Fallback
+    fallback_text = article_title or re.sub(r'\s+', ' ', user_input).strip() or "확인할 수 없는 주장"
+    return NormalizedClaim(
+        claim_text=fallback_text,
+        original_intent="verification", # Default assumption
+        key_entities=extract_entities(fallback_text) # Regex fallback
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -247,24 +260,32 @@ def run(state: dict) -> dict:
         # ── 3. 주장 정규화 ──
         normalize_mode = (state.get("normalize_mode") or "llm").lower()
         if normalize_mode == "basic":
-            claim_text = normalize_text_basic(snippet) or normalize_text_basic(fetched["title"]) or "확인할 수 없는 주장"
+            normalized_obj = NormalizedClaim(
+                claim_text=normalize_text_basic(snippet) or normalize_text_basic(fetched["title"]) or "확인할 수 없는 주장",
+                original_intent="verification",
+                key_entities=extract_entities(snippet)
+            )
             logger.info(f"[{trace_id}] 기본 정규화 사용")
         else:
-            claim_text = normalize_claim_with_llm(
+            normalized_obj = normalize_claim_with_llm(
                 user_input=snippet,
                 article_title=fetched["title"],
                 article_content=fetched["text"],
             )
-        logger.info(f"[{trace_id}] 정규화된 주장: {claim_text[:80]}")
+        
+        claim_text = normalized_obj.claim_text
+        logger.info(f"[{trace_id}] 정규화된 주장: {claim_text[:80]} (의도: {normalized_obj.original_intent})")
 
         # ── 4. 부가 정보 추출 ──
         target_text = snippet if snippet else fetched["text"]
         detected_lang = detect_language(claim_text)
         temporal = extract_temporal_info(target_text)
-        entities = extract_entities(claim_text)
+        # Use LLM extracted entities if available, else regex fallback is already inside object or here
+        entities = normalized_obj.key_entities if normalized_obj.key_entities else extract_entities(claim_text)
 
         # ── 5. State 업데이트 ──
         state["claim_text"] = claim_text
+        state["original_intent"] = normalized_obj.original_intent # New State Field
         state["language"] = language or detected_lang
 
         state["canonical_evidence"] = {

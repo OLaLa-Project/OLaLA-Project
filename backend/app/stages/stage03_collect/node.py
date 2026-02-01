@@ -145,16 +145,52 @@ def run(state: dict) -> dict:
 
     evidence_candidates = []
     
+    async def _safe_task(coro, timeout=10.0, name="Task"):
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"Stage 3 Task Timeout ({timeout}s): {name}")
+            return []
+        except Exception as e:
+            logger.error(f"Stage 3 Task Error ({name}): {e}")
+            return []
+
     async def _gather_all():
         tasks = []
-        for q in search_queries:
-            # Parallelize providers
-            tasks.append(_search_wiki(q, search_mode))
-            tasks.append(_search_naver(q))
-            tasks.append(_search_duckduckgo(q))
+        for i, q_obj in enumerate(search_queries):
+            # Handle both dict (new) and str (legacy)
+            if isinstance(q_obj, str):
+                text = q_obj
+                qtype = "direct"
+            else:
+                text = q_obj.get("text", "")
+                qtype = q_obj.get("type", "direct")
+            
+            if not text:
+                continue
+
+            # Routing Logic with Individual Timeouts
+            if qtype == "wiki":
+                tasks.append(_safe_task(_search_wiki(text, search_mode), 60.0, f"Wiki:{text[:10]}"))
+            elif qtype == "news":
+                tasks.append(_safe_task(_search_naver(text), 10.0, f"Naver:{text[:10]}"))
+                tasks.append(_safe_task(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
+            elif qtype == "web":
+                 tasks.append(_safe_task(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
+            else:
+                tasks.append(_safe_task(_search_wiki(text, search_mode), 60.0, f"Wiki:{text[:10]}"))
+                tasks.append(_safe_task(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
+                if qtype != "verification":
+                    tasks.append(_safe_task(_search_naver(text), 5.0, f"Naver:{text[:10]}"))
         
+        # Now gather safe tasks - none should hang indefinitely
         results = await asyncio.gather(*tasks)
-        flat_results = [item for sublist in results for item in sublist]
+        
+        flat_results = []
+        for r in results:
+             if isinstance(r, list):
+                 flat_results.extend(r)
+        
         return flat_results
 
     try:

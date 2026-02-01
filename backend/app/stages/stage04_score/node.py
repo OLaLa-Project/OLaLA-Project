@@ -45,10 +45,8 @@ def run(state: dict) -> dict:
         if source_type in {"KNOWLEDGE_BASE", "KB_DOC", "WIKIPEDIA"}:
             final_score = calculate_hybrid_score(
                 hit=hit_for_score, 
-                keywords=keywords,
-                w_vec=0.7, 
-                w_title=0.1, 
-                w_lex=0.2
+                keywords=keywords
+                # Weights are now internal to the function (Additive Boost)
             )
         else:
              # Web Search Scoring (Simplified)

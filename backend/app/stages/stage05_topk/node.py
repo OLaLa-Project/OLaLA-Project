@@ -45,20 +45,41 @@ def run(state: dict) -> dict:
 
     logger.info(f"Stage 5 Start. Candidates: {len(scored)}, Threshold: {THRESHOLD_SCORE}")
 
-    # 1. Filter
-    filtered = [item for item in scored if item.get("score", 0.0) >= THRESHOLD_SCORE]
-
-    # 2. Sort
-    filtered.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-
-    # 3. Top K
-    top_k = filtered[:TOP_K_LIMIT]
+    # 4. Filter & Sort by Group (Quota System)
+    # WIKI_LIMIT = 3 (Facts)
+    # NEWS_WEB_LIMIT = 3 (Recent Info)
+    
+    WIKI_LIMIT = 3
+    NEWS_WEB_LIMIT = 3
+    
+    wiki_candidates = []
+    news_web_candidates = []
+    
+    for item in scored:
+        if item.get("score", 0.0) < THRESHOLD_SCORE:
+            continue
+            
+        src = item.get("source_type", "WEB")
+        if src in {"KNOWLEDGE_BASE", "WIKIPEDIA", "KB_DOC"}:
+            wiki_candidates.append(item)
+        else:
+            news_web_candidates.append(item)
+            
+    # Sort each group
+    wiki_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    news_web_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    
+    # Select Top K from each according to quota
+    final_selection = wiki_candidates[:WIKI_LIMIT] + news_web_candidates[:NEWS_WEB_LIMIT]
+    
+    # Still sort the final combined list by score for display purposes
+    final_selection.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
     # 4. Format to Citation Schema (Gateway 호환)
     # 핵심 수정: evid_id와 snippet 필드 추가
     citations = []
-
-    for item in top_k:
+    
+    for item in final_selection:
         url = item.get("url", "")
         title = item.get("title", "")
         content = item.get("content", "")

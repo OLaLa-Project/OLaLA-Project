@@ -41,7 +41,7 @@ class TeamAQueryGenResponse(BaseModel):
     model: str
     prompt: str
     raw: str
-    json: Optional[Dict[str, Any]] = None
+    response_json: Optional[Dict[str, Any]] = Field(default=None, alias="json")
     error: Optional[str] = None
 
 
@@ -366,7 +366,7 @@ def team_a_querygen(req: TeamAQueryGenRequest) -> JSONResponse:
                 model=model,
                 prompt=prompt,
                 raw=raw,
-                json=parsed,
+                response_json=parsed,
                 error=error,
             ).model_dump()
         )
