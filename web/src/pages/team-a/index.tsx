@@ -43,7 +43,7 @@ type RetrieveResult = {
 };
 
 const envBase = (import.meta.env.VITE_API_BASE_URL || "").trim();
-const inferredBase = `${window.location.protocol}//${window.location.hostname}:8000`;
+const inferredBase = `${window.location.protocol}//${window.location.hostname}:8080`;
 const shouldOverride =
   envBase &&
   /(localhost|127\.0\.0\.1)/.test(envBase) &&
@@ -461,20 +461,20 @@ function TeamAPage() {
             <div className="output" style={{ whiteSpace: "pre-wrap", minHeight: 180 }}>
               {stage3Queries.length
                 ? stage3Queries.map((row) => (
-                    <div key={`q-${row.claim_id}`} style={{ marginBottom: 12 }}>
-                      <div>
-                        <strong>{row.claim_id}</strong>
-                      </div>
-                      <div>news:</div>
-                      {(row.news || []).map((q, idx) => (
-                        <div key={`n-${row.claim_id}-${idx}`}>- {q}</div>
-                      ))}
-                      <div>wiki:</div>
-                      {(row.wiki || []).map((q, idx) => (
-                        <div key={`w-${row.claim_id}-${idx}`}>- {q}</div>
-                      ))}
+                  <div key={`q-${row.claim_id}`} style={{ marginBottom: 12 }}>
+                    <div>
+                      <strong>{row.claim_id}</strong>
                     </div>
-                  ))
+                    <div>news:</div>
+                    {(row.news || []).map((q, idx) => (
+                      <div key={`n-${row.claim_id}-${idx}`}>- {q}</div>
+                    ))}
+                    <div>wiki:</div>
+                    {(row.wiki || []).map((q, idx) => (
+                      <div key={`w-${row.claim_id}-${idx}`}>- {q}</div>
+                    ))}
+                  </div>
+                ))
                 : "-"}
             </div>
             <div className="label">Manual JSON (paste)</div>

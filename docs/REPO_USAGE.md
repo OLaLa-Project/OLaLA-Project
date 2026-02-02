@@ -35,7 +35,7 @@
 ```bash
 docker compose up -d
 # health check
-curl http://localhost:8000/health
+curl http://localhost:8080/health
 ```
 
 ## 5) API 확인

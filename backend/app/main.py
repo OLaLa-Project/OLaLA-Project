@@ -13,9 +13,9 @@ cors_origins_env = os.getenv("CORS_ORIGINS", "")
 cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
 if not cors_origins:
     cors_origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://192.168.0.4:5173",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+        "http://192.168.0.4:5175",
     ]
 app.add_middleware(
     CORSMiddleware,

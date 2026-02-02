@@ -136,6 +136,10 @@ def run(state: dict) -> dict:
     """
     search_queries = state.get("search_queries", [])
     if not search_queries:
+        # Stage 2 output fallback
+        search_queries = state.get("query_variants", [])
+
+    if not search_queries:
         fallback = state.get("claim_text") or state.get("input_payload")
         if fallback:
             search_queries = [fallback]
@@ -181,7 +185,7 @@ def run(state: dict) -> dict:
                 tasks.append(_safe_task(_search_wiki(text, search_mode), 60.0, f"Wiki:{text[:10]}"))
                 tasks.append(_safe_task(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
                 if qtype != "verification":
-                    tasks.append(_safe_task(_search_naver(text), 5.0, f"Naver:{text[:10]}"))
+                    tasks.append(_safe_task(_search_naver(text), 10.0, f"Naver:{text[:10]}"))
         
         # Now gather safe tasks - none should hang indefinitely
         results = await asyncio.gather(*tasks)

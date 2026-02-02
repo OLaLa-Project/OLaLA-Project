@@ -42,6 +42,7 @@ class Citation(BaseModel):
     url: Optional[str] = None
     quote: Optional[str] = None
     relevance: Optional[float] = None
+    evid_id: Optional[str] = None
 
 
 class ModelInfo(BaseModel):

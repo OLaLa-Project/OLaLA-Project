@@ -106,7 +106,7 @@ type TruthCheckRequest = {
 };
 
 const envBase = (import.meta.env.VITE_API_BASE_URL || "").trim();
-const inferredBase = `${window.location.protocol}//${window.location.hostname}:8000`;
+const inferredBase = `${window.location.protocol}//${window.location.hostname}:8080`;
 const shouldOverride =
     envBase &&
     /(localhost|127\\.0\\.0\\.1)/.test(envBase) &&

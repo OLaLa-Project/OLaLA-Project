@@ -17,7 +17,7 @@ ollama list                   # qwen2.5:3b 확인
 ```bash
 cp .env.example .env                   # 환경변수 (.env.example 기본값 그대로 사용 가능)
 docker compose up -d --build           # api + db 실행 (Ollama 컨테이너 없음)
-curl http://localhost:8000/health      # 헬스체크
+curl http://localhost:8080/health      # 헬스체크
 ```
 
 ## SLM2 테스트 (Stage 6-8)

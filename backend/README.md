@@ -18,7 +18,7 @@ PostgreSQL에 결과를 저장합니다.
 ## 실행 방법
 ```bash
 pip install -r backend/requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
 ## Postgres 적용

@@ -4,7 +4,7 @@ import '../models/verification_result.dart';
 
 class ApiService {
   // TODO: 실제 서버 URL로 변경
-  static const String baseUrl = 'http://localhost:8000';
+  static const String baseUrl = 'http://localhost:8080';
 
   /// 주장을 검증하는 API 호출
   Future<VerificationResult> verifyClaim(String claim) async {
