@@ -1,14 +1,14 @@
-"""
-SLM2 Stages (6-8) 테스트 스크립트.
+﻿"""
+SLM2 Stages (6-7) + Stage 8 Aggregator ?뚯뒪???ㅽ겕由쏀듃.
 
-실행 방법:
+?ㅽ뻾 諛⑸쾿:
     cd backend
     python -m tests.test_slm2_stages
 
-필수 테스트 항목:
-1. JSON 파싱 실패 → 재요청 동작
-2. quote 검증 실패 citation 제거 + citations==0 → UNVERIFIED 강제
-3. A/B 병합 규칙 동작
+?꾩닔 ?뚯뒪????ぉ:
+1. JSON ?뚯떛 ?ㅽ뙣 ???ъ슂泥??숈옉
+2. quote 寃利??ㅽ뙣 citation ?쒓굅 + citations==0 ??UNVERIFIED 媛뺤젣
+3. A/B 蹂묓빀 洹쒖튃 ?숈옉
 """
 
 import sys
@@ -17,7 +17,7 @@ import logging
 from typing import Callable
 from unittest.mock import patch, MagicMock
 
-# 로깅 설정
+# 濡쒓퉭 ?ㅼ젙
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 class TestResult:
-    """테스트 결과 추적."""
+    """?뚯뒪??寃곌낵 異붿쟻."""
     def __init__(self):
         self.passed = 0
         self.failed = 0
@@ -38,31 +38,31 @@ class TestResult:
 
     def ok(self, name: str):
         self.passed += 1
-        print(f"  ✓ {name}")
+        print(f"  ??{name}")
 
     def fail(self, name: str, reason: str):
         self.failed += 1
         self.errors.append((name, reason))
-        print(f"  ✗ {name}: {reason}")
+        print(f"  ??{name}: {reason}")
 
     def summary(self):
         total = self.passed + self.failed
         print(f"\n{'='*60}")
-        print(f"결과: {self.passed}/{total} 통과")
+        print(f"寃곌낵: {self.passed}/{total} ?듦낵")
         if self.errors:
-            print("\n실패 목록:")
+            print("\n?ㅽ뙣 紐⑸줉:")
             for name, reason in self.errors:
                 print(f"  - {name}: {reason}")
         return self.failed == 0
 
 
 # ============================================================================
-# Test 1: JSON 파싱 및 재시도
+# Test 1: JSON ?뚯떛 諛??ъ떆??
 # ============================================================================
 
 def test_json_parsing(results: TestResult):
-    """JSON 파싱 및 재시도 테스트."""
-    print("\n[Test 1] JSON 파싱 및 재시도")
+    """JSON ?뚯떛 諛??ъ떆???뚯뒪??"""
+    print("\n[Test 1] JSON parsing retry")
 
     from app.stages._shared.guardrails import (
         parse_json_safe,
@@ -71,15 +71,15 @@ def test_json_parsing(results: TestResult):
         JSONParseError,
     )
 
-    # 1.1 정상 JSON 파싱
+    # 1.1 ?뺤긽 JSON ?뚯떛
     valid_json = '{"stance": "TRUE", "confidence": 0.8}'
     result = parse_json_safe(valid_json)
     if result and result.get("stance") == "TRUE":
-        results.ok("정상 JSON 파싱")
+        results.ok("normalize whitespace")
     else:
-        results.fail("정상 JSON 파싱", f"결과: {result}")
+        results.fail("unexpected error", f"{e}")
 
-    # 1.2 마크다운 코드블록에서 JSON 추출
+    # 1.2 留덊겕?ㅼ슫 肄붾뱶釉붾줉?먯꽌 JSON 異붿텧
     markdown_json = """
     Here is the analysis:
     ```json
@@ -88,19 +88,19 @@ def test_json_parsing(results: TestResult):
     """
     result = parse_json_safe(markdown_json)
     if result and result.get("stance") == "FALSE":
-        results.ok("마크다운 코드블록에서 JSON 추출")
+        results.ok("留덊겕?ㅼ슫 肄붾뱶釉붾줉?먯꽌 JSON 異붿텧")
     else:
-        results.fail("마크다운 코드블록에서 JSON 추출", f"결과: {result}")
+        results.fail("留덊겕?ㅼ슫 肄붾뱶釉붾줉?먯꽌 JSON 異붿텧", f"寃곌낵: {result}")
 
-    # 1.3 불완전 JSON → None 반환
+    # 1.3 遺덉셿??JSON ??None 諛섑솚
     invalid_json = '{"stance": "TRUE", "confidence":'
     result = parse_json_safe(invalid_json)
     if result is None:
-        results.ok("불완전 JSON → None 반환")
+        results.ok("遺덉셿??JSON ??None 諛섑솚")
     else:
-        results.fail("불완전 JSON → None 반환", f"결과: {result}")
+        results.fail("遺덉셿??JSON ??None 諛섑솚", f"寃곌낵: {result}")
 
-    # 1.4 재시도 로직 테스트
+    # 1.4 ?ъ떆??濡쒖쭅 ?뚯뒪??
     call_count = 0
 
     def mock_call_fn():
@@ -112,28 +112,28 @@ def test_json_parsing(results: TestResult):
 
     result = parse_json_with_retry(mock_call_fn)
     if call_count == 2 and result.get("stance") == "TRUE":
-        results.ok("JSON 파싱 실패 시 재시도")
+        results.ok("JSON parse retry")
     else:
-        results.fail("JSON 파싱 실패 시 재시도", f"호출횟수: {call_count}, 결과: {result}")
+        results.fail("JSON parse retry", f"call_count={call_count}, result={result}")
 
-    # 1.5 재시도 후에도 실패 → 예외 발생
+    # 1.5 ?ъ떆???꾩뿉???ㅽ뙣 ???덉쇅 諛쒖깮
     def always_fail_fn():
         return "Never valid JSON {"
 
     try:
         parse_json_with_retry(always_fail_fn)
-        results.fail("재시도 후 실패 시 예외", "예외가 발생하지 않음")
+        results.fail("unexpected error", f"{e}")
     except JSONParseError:
-        results.ok("재시도 후 실패 시 예외 발생")
+        results.ok("normalize whitespace")
 
 
 # ============================================================================
-# Test 2: Quote 검증 및 UNVERIFIED 강제
+# Test 2: Quote 寃利?諛?UNVERIFIED 媛뺤젣
 # ============================================================================
 
 def test_quote_validation(results: TestResult):
-    """Quote 검증 및 UNVERIFIED 강제 테스트."""
-    print("\n[Test 2] Quote 검증 및 UNVERIFIED 강제")
+    """Quote 寃利?諛?UNVERIFIED 媛뺤젣 ?뚯뒪??"""
+    print("\n[Test 2] Quote 寃利?諛?UNVERIFIED 媛뺤젣")
 
     from app.stages._shared.guardrails import (
         validate_citations,
@@ -141,55 +141,63 @@ def test_quote_validation(results: TestResult):
         build_draft_verdict,
     )
 
-    # 테스트용 증거
+    # ?뚯뒪?몄슜 利앷굅
     evidence_topk = [
         {
             "evid_id": "ev_1",
-            "title": "뉴스 기사 1",
+            "title": "?댁뒪 湲곗궗 1",
             "url": "https://example.com/1",
-            "snippet": "서울시는 2024년 예산을 10조원으로 확정했다고 발표했다.",
+            "snippet": "?쒖슱?쒕뒗 2024???덉궛??10議곗썝?쇰줈 ?뺤젙?덈떎怨?諛쒗몴?덈떎.",
             "source_type": "NEWS",
         },
         {
             "evid_id": "ev_2",
-            "title": "공식 보도자료",
+            "title": "怨듭떇 蹂대룄?먮즺",
             "url": "https://example.com/2",
-            "snippet": "정부는 새로운 정책을 시행한다고 밝혔다.",
+            "snippet": "?뺣????덈줈???뺤콉???쒗뻾?쒕떎怨?諛앺삍??",
             "source_type": "WEB_URL",
         },
     ]
 
-    # 2.1 유효한 quote → 통과
+    # 2.1 valid quote should pass
     valid_citations = [
-        {"evid_id": "ev_1", "quote": "서울시는 2024년 예산을 10조원으로 확정했다"},
+        {"evid_id": "ev_1", "quote": "서울"},
     ]
     validated = validate_citations(valid_citations, evidence_topk)
     if len(validated) == 1:
-        results.ok("유효한 quote 검증 통과")
+        results.ok("valid quote passes")
     else:
-        results.fail("유효한 quote 검증 통과", f"통과 수: {len(validated)}")
+        results.fail("valid quote passes", f"passed={len(validated)}")
 
-    # 2.2 snippet에 없는 quote → 제거
+    # 2.2 invalid quote should be removed
     invalid_citations = [
-        {"evid_id": "ev_1", "quote": "이것은 snippet에 없는 문장입니다"},
+        {"evid_id": "ev_1", "quote": "no match content"},
     ]
     validated = validate_citations(invalid_citations, evidence_topk)
     if len(validated) == 0:
-        results.ok("무효한 quote 제거")
+        results.ok("invalid quote removed")
     else:
-        results.fail("무효한 quote 제거", f"통과 수: {len(validated)}")
+        results.fail("invalid quote removed", f"passed={len(validated)}")
+    invalid_citations = [
+        {"evid_id": "ev_1", "quote": "invalid quote with no snippet"},
+    ]
+    validated = validate_citations(invalid_citations, evidence_topk)
+    if len(validated) == 0:
+        results.ok("臾댄슚??quote ?쒓굅")
+    else:
+        results.fail("臾댄슚??quote ?쒓굅", f"?듦낵 ?? {len(validated)}")
 
-    # 2.3 evid_id 불일치 → 제거
+    # 2.3 evid_id 遺덉씪移????쒓굅
     wrong_evid_citations = [
-        {"evid_id": "ev_999", "quote": "서울시는 2024년 예산"},
+        {"evid_id": "ev_999", "quote": "?쒖슱?쒕뒗 2024???덉궛"},
     ]
     validated = validate_citations(wrong_evid_citations, evidence_topk)
     if len(validated) == 0:
-        results.ok("evid_id 불일치 제거")
+        results.ok("evid_id 遺덉씪移??쒓굅")
     else:
-        results.fail("evid_id 불일치 제거", f"통과 수: {len(validated)}")
+        results.fail("evid_id 遺덉씪移??쒓굅", f"?듦낵 ?? {len(validated)}")
 
-    # 2.4 citations=0 → UNVERIFIED 강제
+    # 2.4 citations=0 ??UNVERIFIED 媛뺤젣
     verdict_with_stance = {
         "stance": "TRUE",
         "confidence": 0.9,
@@ -197,36 +205,36 @@ def test_quote_validation(results: TestResult):
     }
     enforced = enforce_unverified_if_no_citations(verdict_with_stance)
     if enforced["stance"] == "UNVERIFIED" and enforced["confidence"] == 0.0:
-        results.ok("citations=0 → UNVERIFIED 강제")
+        results.ok("citations=0 ??UNVERIFIED 媛뺤젣")
     else:
-        results.fail("citations=0 → UNVERIFIED 강제", f"stance: {enforced['stance']}")
+        results.fail("citations=0 ??UNVERIFIED 媛뺤젣", f"stance: {enforced['stance']}")
 
-    # 2.5 build_draft_verdict 통합 테스트
+    # 2.5 build_draft_verdict ?듯빀 ?뚯뒪??
     raw_verdict = {
         "stance": "TRUE",
         "confidence": 0.9,
-        "reasoning_bullets": ["근거 1"],
+        "reasoning_bullets": ["洹쇨굅 1"],
         "citations": [
-            {"evid_id": "ev_1", "quote": "예산을 10조원으로 확정"},  # 유효
-            {"evid_id": "ev_1", "quote": "이건 없는 내용"},  # 무효
+        {"evid_id": "ev_1", "quote": "invalid quote with no snippet"},
+        {"evid_id": "ev_1", "quote": "invalid quote with no snippet"},
         ],
-        "weak_points": [],
+        "weak_points": ["weak point"],
         "followup_queries": [],
     }
     built = build_draft_verdict(raw_verdict, evidence_topk)
     if len(built["citations"]) == 1 and built["stance"] == "TRUE":
-        results.ok("build_draft_verdict 통합 (유효 citation 유지)")
+        results.ok("build_draft_verdict ?듯빀 (?좏슚 citation ?좎?)")
     else:
-        results.fail("build_draft_verdict 통합", f"citations: {len(built['citations'])}")
+        results.fail("build_draft_verdict ?듯빀", f"citations: {len(built['citations'])}")
 
 
 # ============================================================================
-# Test 3: A/B 병합 규칙
+# Test 3: A/B 蹂묓빀 洹쒖튃
 # ============================================================================
 
 def test_aggregate_rules(results: TestResult):
-    """A/B 병합 규칙 테스트."""
-    print("\n[Test 3] A/B 병합 규칙")
+    """A/B 蹂묓빀 洹쒖튃 ?뚯뒪??"""
+    print("\n[Test 3] A/B 蹂묓빀 洹쒖튃")
 
     from app.stages.stage08_aggregate.node import (
         determine_final_stance,
@@ -235,79 +243,79 @@ def test_aggregate_rules(results: TestResult):
         run as aggregate_run,
     )
 
-    # 3.1 둘 다 UNVERIFIED → UNVERIFIED
+    # 3.1 ????UNVERIFIED ??UNVERIFIED
     stance = determine_final_stance("UNVERIFIED", "UNVERIFIED", has_citations=False)
     if stance == "UNVERIFIED":
-        results.ok("UNVERIFIED + UNVERIFIED → UNVERIFIED")
+        results.ok("UNVERIFIED + UNVERIFIED ??UNVERIFIED")
     else:
-        results.fail("UNVERIFIED + UNVERIFIED → UNVERIFIED", f"결과: {stance}")
+        results.fail("UNVERIFIED + UNVERIFIED ??UNVERIFIED", f"寃곌낵: {stance}")
 
-    # 3.2 합의 (TRUE + TRUE) + citations → TRUE
+    # 3.2 ?⑹쓽 (TRUE + TRUE) + citations ??TRUE
     stance = determine_final_stance("TRUE", "TRUE", has_citations=True)
     if stance == "TRUE":
-        results.ok("TRUE + TRUE + citations → TRUE")
+        results.ok("TRUE + TRUE + citations ??TRUE")
     else:
-        results.fail("TRUE + TRUE + citations → TRUE", f"결과: {stance}")
+        results.fail("TRUE + TRUE + citations ??TRUE", f"寃곌낵: {stance}")
 
-    # 3.3 합의 (FALSE + FALSE) + citations → FALSE
+    # 3.3 ?⑹쓽 (FALSE + FALSE) + citations ??FALSE
     stance = determine_final_stance("FALSE", "FALSE", has_citations=True)
     if stance == "FALSE":
-        results.ok("FALSE + FALSE + citations → FALSE")
+        results.ok("FALSE + FALSE + citations ??FALSE")
     else:
-        results.fail("FALSE + FALSE + citations → FALSE", f"결과: {stance}")
+        results.fail("FALSE + FALSE + citations ??FALSE", f"寃곌낵: {stance}")
 
-    # 3.4 불합의 (TRUE vs FALSE) → MIXED
+    # 3.4 遺덊빀??(TRUE vs FALSE) ??MIXED
     stance = determine_final_stance("TRUE", "FALSE", has_citations=True)
     if stance == "MIXED":
-        results.ok("TRUE vs FALSE → MIXED")
+        results.ok("TRUE vs FALSE ??MIXED")
     else:
-        results.fail("TRUE vs FALSE → MIXED", f"결과: {stance}")
+        results.fail("TRUE vs FALSE ??MIXED", f"寃곌낵: {stance}")
 
-    # 3.5 citations 없으면 → UNVERIFIED
+    # 3.5 citations ?놁쑝硫???UNVERIFIED
     stance = determine_final_stance("TRUE", "TRUE", has_citations=False)
     if stance == "UNVERIFIED":
-        results.ok("합의해도 citations 없으면 → UNVERIFIED")
+        results.ok("normalize whitespace")
     else:
-        results.fail("합의해도 citations 없으면 → UNVERIFIED", f"결과: {stance}")
+        results.fail("unexpected error", f"{e}")
 
-    # 3.6 한쪽만 UNVERIFIED → 다른 쪽 따라감
+    # 3.6 ?쒖そ留?UNVERIFIED ???ㅻⅨ 履??곕씪媛?
     stance = determine_final_stance("TRUE", "UNVERIFIED", has_citations=True)
     if stance == "TRUE":
-        results.ok("TRUE + UNVERIFIED → TRUE")
+        results.ok("TRUE + UNVERIFIED ??TRUE")
     else:
-        results.fail("TRUE + UNVERIFIED → TRUE", f"결과: {stance}")
+        results.fail("TRUE + UNVERIFIED ??TRUE", f"寃곌낵: {stance}")
 
-    # 3.7 confidence 계산 - 합의
+    # 3.7 confidence 怨꾩궛 - ?⑹쓽
     conf = calculate_final_confidence(0.8, 0.6, "TRUE", "TRUE", "TRUE")
     if abs(conf - 0.7) < 0.01:
-        results.ok("confidence 합의 시 평균")
+        results.ok("confidence conflict penalty")
     else:
-        results.fail("confidence 합의 시 평균", f"결과: {conf}")
+        results.fail("confidence conflict penalty", f"result={conf}")
 
-    # 3.8 confidence 계산 - 불합의 (페널티)
+    # 3.8 confidence 怨꾩궛 - 遺덊빀??(?섎꼸??
     conf = calculate_final_confidence(0.8, 0.8, "MIXED", "TRUE", "FALSE")
     if conf < 0.8:
-        results.ok("confidence 불합의 시 페널티")
+        results.ok("confidence conflict penalty")
     else:
-        results.fail("confidence 불합의 시 페널티", f"결과: {conf}")
+        results.fail("confidence conflict penalty", f"result={conf}")
 
-    # 3.9 Stage8 통합 테스트
+    # 3.9 Stage8 ?듯빀 ?뚯뒪??
     state = {
         "trace_id": "test_001",
         "verdict_support": {
             "stance": "TRUE",
             "confidence": 0.8,
-            "reasoning_bullets": ["지지 근거"],
-            "citations": [{"evid_id": "ev_1", "quote": "인용문"}],
-            "weak_points": [],
+            "reasoning_bullets": ["support reason"],
+            "citations": [{"evid_id": "ev_1", "quote": "sample quote"}],
+            "weak_points": ["weak point"],
             "followup_queries": [],
         },
         "verdict_skeptic": {
             "stance": "TRUE",
             "confidence": 0.7,
-            "reasoning_bullets": ["반박 시도했으나 지지"],
-            "citations": [{"evid_id": "ev_2", "quote": "다른 인용"}],
-            "weak_points": [],
+            "reasoning_bullets": ["skeptic reason"],
+            "citations": [{"evid_id": "ev_2", "quote": "other quote"}],
+            "weak_points": ["weak point"],
             "followup_queries": [],
         },
     }
@@ -316,52 +324,52 @@ def test_aggregate_rules(results: TestResult):
     quality = result_state.get("quality_score", 0)
 
     if draft.get("stance") == "TRUE" and len(draft.get("citations", [])) == 2:
-        results.ok("Stage8 통합 테스트 (합의 병합)")
+        results.ok("Stage8 ?듯빀 ?뚯뒪??(?⑹쓽 蹂묓빀)")
     else:
-        results.fail("Stage8 통합 테스트", f"stance: {draft.get('stance')}, cits: {len(draft.get('citations', []))}")
+        results.fail("Stage8 aggregate test", f"stance={draft.get('stance')}, cits={len(draft.get('citations', []))}")
 
     if quality > 0:
-        results.ok(f"quality_score 계산: {quality}")
+        results.ok(f"quality_score 怨꾩궛: {quality}")
     else:
-        results.fail("quality_score 계산", f"결과: {quality}")
+        results.fail("quality_score 怨꾩궛", f"寃곌낵: {quality}")
 
 
 # ============================================================================
-# Test 4: Stage6/7 노드 테스트 (Mock SLM)
+# Test 4: Stage6/7 ?몃뱶 ?뚯뒪??(Mock SLM)
 # ============================================================================
 
 def test_stage_nodes_with_mock(results: TestResult):
-    """Stage 6/7 노드 테스트 (Mock SLM)."""
-    print("\n[Test 4] Stage 6/7 노드 테스트 (Mock SLM)")
+    """Stage 6/7 ?몃뱶 ?뚯뒪??(Mock SLM)."""
+    print("\n[Test 4] Stage 6/7 ?몃뱶 ?뚯뒪??(Mock SLM)")
 
-    # Mock SLM 응답
+    # Mock SLM ?묐떟
     mock_slm_response = json.dumps({
         "stance": "TRUE",
         "confidence": 0.85,
-        "reasoning_bullets": ["근거 1", "근거 2"],
+        "reasoning_bullets": ["洹쇨굅 1", "洹쇨굅 2"],
         "citations": [
-            {"evid_id": "ev_1", "quote": "서울시는 예산을 확정", "title": "뉴스", "url": "https://example.com"}
+        {"evid_id": "ev_1", "quote": "invalid quote with no snippet"},
         ],
-        "weak_points": ["한계점"],
-        "followup_queries": ["추가 질문"],
+        "weak_points": ["weak point"],
+        "followup_queries": ["異붽? 吏덈Ц"],
     })
 
     test_state = {
         "trace_id": "test_stage",
-        "claim_text": "서울시 예산이 10조원이다",
+        "claim_text": "?쒖슱???덉궛??10議곗썝?대떎",
         "language": "ko",
         "evidence_topk": [
             {
                 "evid_id": "ev_1",
-                "title": "뉴스 기사",
+                "title": "?댁뒪 湲곗궗",
                 "url": "https://example.com",
-                "snippet": "서울시는 예산을 확정했다고 발표했다.",
+                "snippet": "?쒖슱?쒕뒗 ?덉궛???뺤젙?덈떎怨?諛쒗몴?덈떎.",
                 "source_type": "NEWS",
             }
         ],
     }
 
-    # Stage 6 테스트
+    # Stage 6 ?뚯뒪??
     with patch("app.stages._shared.slm_client.call_slm", return_value=mock_slm_response):
         from app.stages.stage06_verify_support.node import run as stage6_run
         result = stage6_run(test_state.copy())
@@ -369,21 +377,21 @@ def test_stage_nodes_with_mock(results: TestResult):
         if "verdict_support" in result:
             verdict = result["verdict_support"]
             if verdict.get("stance") == "TRUE":
-                results.ok("Stage6 실행 성공")
+                results.ok("Stage6 ?ㅽ뻾 ?깃났")
             else:
-                results.fail("Stage6 실행", f"stance: {verdict.get('stance')}")
+                results.fail("Stage6 ?ㅽ뻾", f"stance: {verdict.get('stance')}")
         else:
-            results.fail("Stage6 실행", "verdict_support 없음")
+            results.fail("Stage6 ?ㅽ뻾", "verdict_support ?놁쓬")
 
-    # Stage 7 테스트
+    # Stage 7 ?뚯뒪??
     mock_skeptic_response = json.dumps({
         "stance": "MIXED",
         "confidence": 0.6,
-        "reasoning_bullets": ["반박 근거"],
+        "reasoning_bullets": ["諛섎컯 洹쇨굅"],
         "citations": [
-            {"evid_id": "ev_1", "quote": "예산을 확정", "title": "뉴스", "url": "https://example.com"}
+        {"evid_id": "ev_1", "quote": "invalid quote with no snippet"},
         ],
-        "weak_points": [],
+        "weak_points": ["weak point"],
         "followup_queries": [],
     })
 
@@ -394,20 +402,20 @@ def test_stage_nodes_with_mock(results: TestResult):
         if "verdict_skeptic" in result:
             verdict = result["verdict_skeptic"]
             if verdict.get("stance") in ["TRUE", "FALSE", "MIXED", "UNVERIFIED"]:
-                results.ok("Stage7 실행 성공")
+                results.ok("Stage7 ?ㅽ뻾 ?깃났")
             else:
-                results.fail("Stage7 실행", f"stance: {verdict.get('stance')}")
+                results.fail("Stage7 ?ㅽ뻾", f"stance: {verdict.get('stance')}")
         else:
-            results.fail("Stage7 실행", "verdict_skeptic 없음")
+            results.fail("Stage7 ?ㅽ뻾", "verdict_skeptic ?놁쓬")
 
 
 # ============================================================================
-# Test 5: 에지 케이스
+# Test 5: ?먯? 耳?댁뒪
 # ============================================================================
 
 def test_edge_cases(results: TestResult):
-    """에지 케이스 테스트."""
-    print("\n[Test 5] 에지 케이스")
+    """?먯? 耳?댁뒪 ?뚯뒪??"""
+    print("\n[Test 5] ?먯? 耳?댁뒪")
 
     from app.stages._shared.guardrails import (
         validate_stance,
@@ -416,47 +424,47 @@ def test_edge_cases(results: TestResult):
     )
     from app.stages.stage08_aggregate.node import run as aggregate_run
 
-    # 5.1 잘못된 stance → UNVERIFIED
+    # 5.1 ?섎せ??stance ??UNVERIFIED
     stance = validate_stance("INVALID_STANCE")
     if stance == "UNVERIFIED":
-        results.ok("잘못된 stance → UNVERIFIED")
+        results.ok("normalize whitespace")
     else:
-        results.fail("잘못된 stance → UNVERIFIED", f"결과: {stance}")
+        results.fail("unexpected error", f"{e}")
 
-    # 5.2 confidence 범위 검증
+    # 5.2 confidence 踰붿쐞 寃利?
     conf = validate_confidence(1.5)
     if conf == 1.0:
-        results.ok("confidence > 1.0 → 1.0")
+        results.ok("confidence conflict penalty")
     else:
-        results.fail("confidence > 1.0 → 1.0", f"결과: {conf}")
+        results.fail("confidence conflict penalty", f"result={conf}")
 
     conf = validate_confidence(-0.5)
     if conf == 0.0:
-        results.ok("confidence < 0.0 → 0.0")
+        results.ok("confidence conflict penalty")
     else:
-        results.fail("confidence < 0.0 → 0.0", f"결과: {conf}")
+        results.fail("confidence conflict penalty", f"result={conf}")
 
     conf = validate_confidence("invalid")
     if conf == 0.0:
-        results.ok("confidence 문자열 → 0.0")
+        results.ok("confidence conflict penalty")
     else:
-        results.fail("confidence 문자열 → 0.0", f"결과: {conf}")
+        results.fail("confidence conflict penalty", f"result={conf}")
 
-    # 5.3 공백 정규화
+    # 5.3 怨듬갚 ?뺢퇋??
     text = "  Hello   World  \n\t Test  "
     normalized = normalize_whitespace(text)
     if normalized == "hello world test":
-        results.ok("공백 정규화")
+        results.ok("normalize whitespace")
     else:
-        results.fail("공백 정규화", f"결과: '{normalized}'")
+        results.fail("normalize whitespace", f"result=''{normalized}''")
 
-    # 5.4 빈 입력으로 Stage8 실행
+    # 5.4 鍮??낅젰?쇰줈 Stage8 ?ㅽ뻾
     empty_state = {"trace_id": "empty_test"}
     result = aggregate_run(empty_state)
     if result.get("draft_verdict", {}).get("stance") == "UNVERIFIED":
-        results.ok("빈 입력 시 UNVERIFIED")
+        results.ok("鍮??낅젰 ??UNVERIFIED")
     else:
-        results.fail("빈 입력 시 UNVERIFIED", f"결과: {result.get('draft_verdict')}")
+        results.fail("鍮??낅젰 ??UNVERIFIED", f"寃곌낵: {result.get('draft_verdict')}")
 
 
 # ============================================================================
@@ -464,9 +472,9 @@ def test_edge_cases(results: TestResult):
 # ============================================================================
 
 def main():
-    """메인 테스트 실행."""
+    """硫붿씤 ?뚯뒪???ㅽ뻾."""
     print("=" * 60)
-    print("SLM2 Stages (6-8) 테스트")
+    print("SLM2 Stages (6-7) + Stage 8 Aggregator tests")
     print("=" * 60)
 
     results = TestResult()
@@ -478,8 +486,8 @@ def main():
         test_stage_nodes_with_mock(results)
         test_edge_cases(results)
     except Exception as e:
-        logger.exception(f"테스트 중 예외 발생: {e}")
-        results.fail("테스트 실행", str(e))
+        logger.exception(f"?뚯뒪??以??덉쇅 諛쒖깮: {e}")
+        results.fail("unexpected error", f"{e}")
 
     success = results.summary()
     sys.exit(0 if success else 1)
@@ -487,3 +495,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

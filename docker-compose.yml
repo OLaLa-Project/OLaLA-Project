@@ -28,6 +28,7 @@ services:
     image: ollama/ollama:latest
     container_name: olala-ollama
     restart: unless-stopped
+    env_file: .env
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
     ports:
@@ -54,12 +55,24 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-olala}
       OLLAMA_URL: http://ollama:11434
-      SLM_BASE_URL: ${SLM_BASE_URL:-http://ollama:11434/v1}
-      SLM_API_KEY: ${SLM_API_KEY:-ollama}
-      SLM_MODEL: ${SLM_MODEL:-gemma3:4b}
-      SLM_TIMEOUT_SECONDS: ${SLM_TIMEOUT_SECONDS:-60}
-      SLM_MAX_TOKENS: ${SLM_MAX_TOKENS:-1024}
-      SLM_TEMPERATURE: ${SLM_TEMPERATURE:-0.2}
+      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://ollama:11434/v1}
+      SLM1_API_KEY: ${SLM1_API_KEY:-ollama}
+      SLM1_MODEL: ${SLM1_MODEL:-gemma3:4b}
+      SLM1_TIMEOUT_SECONDS: ${SLM1_TIMEOUT_SECONDS:-60}
+      SLM1_MAX_TOKENS: ${SLM1_MAX_TOKENS:-768}
+      SLM1_TEMPERATURE: ${SLM1_TEMPERATURE:-0.1}
+      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://ollama:11434/v1}
+      SLM2_API_KEY: ${SLM2_API_KEY:-ollama}
+      SLM2_MODEL: ${SLM2_MODEL:-Qwen3-4B}
+      SLM2_TIMEOUT_SECONDS: ${SLM2_TIMEOUT_SECONDS:-60}
+      SLM2_MAX_TOKENS: ${SLM2_MAX_TOKENS:-768}
+      SLM2_TEMPERATURE: ${SLM2_TEMPERATURE:-0.1}
+      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-https://api.openai.com/v1}
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+      JUDGE_MODEL: ${JUDGE_MODEL:-gpt-4.1}
+      JUDGE_TIMEOUT_SECONDS: ${JUDGE_TIMEOUT_SECONDS:-60}
+      JUDGE_MAX_TOKENS: ${JUDGE_MAX_TOKENS:-1024}
+      JUDGE_TEMPERATURE: ${JUDGE_TEMPERATURE:-0.2}
       NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
       NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
       LOG_DIR: /app/logs

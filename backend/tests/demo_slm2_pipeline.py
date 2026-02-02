@@ -1,23 +1,23 @@
-"""
-SLM2 파이프라인 데모 스크립트.
+﻿"""
+SLM2 ?뚯씠?꾨씪???곕え ?ㅽ겕由쏀듃.
 
-OpenAI-compatible SLM 서버(vLLM 또는 Ollama)를 사용하여 Stage 6-8 파이프라인을 테스트합니다.
+OpenAI-compatible SLM ?쒕쾭(vLLM ?먮뒗 Ollama)瑜??ъ슜?섏뿬 Stage 6-7 + Stage 8 Aggregator ?뚯씠?꾨씪?몄쓣 ?뚯뒪?명빀?덈떎.
 
-실행 전 준비:
-1. SLM 서버 실행:
+?ㅽ뻾 ??以鍮?
+1. SLM ?쒕쾭 ?ㅽ뻾:
    - Ollama: docker compose up -d ollama && docker exec olala-project-ollama-1 ollama pull llama3.2
-   - vLLM: docker-compose에서 vllm 서비스 주석 해제 후 실행
-2. 환경변수 설정 (.env 파일 또는 직접 export):
-   - SLM_BASE_URL: Ollama는 http://ollama:11434/v1, vLLM은 http://localhost:8001/v1
-   - SLM_API_KEY: Ollama는 "ollama", vLLM은 "local-slm-key"
-   - SLM_MODEL: Ollama 예시 "llama3.2", vLLM 예시 "slm"
+   - vLLM: docker-compose?먯꽌 vllm ?쒕퉬??二쇱꽍 ?댁젣 ???ㅽ뻾
+2. ?섍꼍蹂???ㅼ젙 (.env ?뚯씪 ?먮뒗 吏곸젒 export):
+   - SLM_BASE_URL: Ollama??http://ollama:11434/v1, vLLM? http://localhost:8001/v1
+   - SLM_API_KEY: Ollama??"ollama", vLLM? "local-slm-key"
+   - SLM_MODEL: Ollama ?덉떆 "llama3.2", vLLM ?덉떆 "slm"
 
-실행 방법 (로컬):
+?ㅽ뻾 諛⑸쾿 (濡쒖뺄):
     cd backend
     python -m tests.demo_slm2_pipeline
     python -m tests.demo_slm2_pipeline --case 1
 
-실행 방법 (Docker):
+?ㅽ뻾 諛⑸쾿 (Docker):
     docker compose run --rm slm2-test
     docker compose run --rm slm2-test --case 1
     docker compose run --rm slm2-test --all
@@ -39,27 +39,27 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# 테스트 케이스 정의
+# ?뚯뒪??耳?댁뒪 ?뺤쓽
 # ============================================================================
 
 TEST_CASES = [
     {
         "id": 1,
-        "name": "명확한 사실 (TRUE 예상)",
-        "claim_text": "서울은 대한민국의 수도이다.",
+        "name": "紐낇솗???ъ떎 (TRUE ?덉긽)",
+        "claim_text": "?쒖슱? ??쒕?援?쓽 ?섎룄?대떎.",
         "evidence_topk": [
             {
                 "evid_id": "ev_1",
-                "title": "위키백과 - 서울",
-                "url": "https://ko.wikipedia.org/wiki/서울",
-                "snippet": "서울특별시는 대한민국의 수도이자 최대 도시이다. 한반도 중앙부에 위치하며, 인구는 약 950만 명이다.",
+                "title": "?꾪궎諛깃낵 - ?쒖슱",
+                "url": "https://ko.wikipedia.org/wiki/?쒖슱",
+                "snippet": "?쒖슱?밸퀎?쒕뒗 ??쒕?援?쓽 ?섎룄?댁옄 理쒕? ?꾩떆?대떎. ?쒕컲??以묒븰遺???꾩튂?섎ŉ, ?멸뎄????950留?紐낆씠??",
                 "source_type": "WIKIPEDIA",
             },
             {
                 "evid_id": "ev_2",
-                "title": "대한민국 헌법",
+                "title": "??쒕?援??뚮쾿",
                 "url": "https://www.law.go.kr",
-                "snippet": "대한민국의 수도는 서울특별시로 한다. 이는 헌법적 관행으로 인정되고 있다.",
+                "snippet": "??쒕?援?쓽 ?섎룄???쒖슱?밸퀎?쒕줈 ?쒕떎. ?대뒗 ?뚮쾿??愿?됱쑝濡??몄젙?섍퀬 ?덈떎.",
                 "source_type": "KB_DOC",
             },
         ],
@@ -67,21 +67,21 @@ TEST_CASES = [
     },
     {
         "id": 2,
-        "name": "명확한 거짓 (FALSE 예상)",
-        "claim_text": "지구는 평평하다.",
+        "name": "紐낇솗??嫄곗쭞 (FALSE ?덉긽)",
+        "claim_text": "吏援щ뒗 ?됲룊?섎떎.",
         "evidence_topk": [
             {
                 "evid_id": "ev_1",
-                "title": "NASA 공식 발표",
+                "title": "NASA 怨듭떇 諛쒗몴",
                 "url": "https://www.nasa.gov",
-                "snippet": "지구는 구형이며, 약간 납작한 타원체 형태를 띠고 있다. 이는 수많은 우주 탐사와 과학적 관측으로 입증되었다.",
+                "snippet": "吏援щ뒗 援ы삎?대ŉ, ?쎄컙 ?⑹옉????먯껜 ?뺥깭瑜??좉퀬 ?덈떎. ?대뒗 ?섎쭖? ?곗＜ ?먯궗? 怨쇳븰??愿痢≪쑝濡??낆쬆?섏뿀??",
                 "source_type": "KB_DOC",
             },
             {
                 "evid_id": "ev_2",
-                "title": "과학 교과서",
+                "title": "怨쇳븰 援먭낵??,
                 "url": "https://example.com/science",
-                "snippet": "지구의 둘레는 약 4만 km이며, 구형 행성으로서 자전과 공전을 한다.",
+                "snippet": "吏援ъ쓽 ?섎젅????4留?km?대ŉ, 援ы삎 ?됱꽦?쇰줈???먯쟾怨?怨듭쟾???쒕떎.",
                 "source_type": "WEB_URL",
             },
         ],
@@ -89,21 +89,21 @@ TEST_CASES = [
     },
     {
         "id": 3,
-        "name": "혼합된 정보 (MIXED 예상)",
-        "claim_text": "커피는 건강에 좋다.",
+        "name": "?쇳빀???뺣낫 (MIXED ?덉긽)",
+        "claim_text": "而ㅽ뵾??嫄닿컯??醫뗫떎.",
         "evidence_topk": [
             {
                 "evid_id": "ev_1",
-                "title": "건강 연구 - 긍정적 효과",
+                "title": "嫄닿컯 ?곌뎄 - 湲띿젙???④낵",
                 "url": "https://health.example.com/1",
-                "snippet": "적당량의 커피 섭취는 심장 건강에 도움이 될 수 있으며, 항산화 물질이 풍부하다는 연구 결과가 있다.",
+                "snippet": "?곷떦?됱쓽 而ㅽ뵾 ??랬???ъ옣 嫄닿컯???꾩????????덉쑝硫? ??궛??臾쇱쭏???띾??섎떎???곌뎄 寃곌낵媛 ?덈떎.",
                 "source_type": "NEWS",
             },
             {
                 "evid_id": "ev_2",
-                "title": "건강 연구 - 부정적 효과",
+                "title": "嫄닿컯 ?곌뎄 - 遺?뺤쟻 ?④낵",
                 "url": "https://health.example.com/2",
-                "snippet": "과도한 카페인 섭취는 불안, 불면증, 심박수 증가 등의 부작용을 유발할 수 있다.",
+                "snippet": "怨쇰룄??移댄럹????랬??遺덉븞, 遺덈㈃利? ?щ컯??利앷? ?깆쓽 遺?묒슜???좊컻?????덈떎.",
                 "source_type": "NEWS",
             },
         ],
@@ -111,14 +111,14 @@ TEST_CASES = [
     },
     {
         "id": 4,
-        "name": "증거 부족 (UNVERIFIED 예상)",
-        "claim_text": "외계 생명체가 지구를 방문한 적이 있다.",
+        "name": "利앷굅 遺議?(UNVERIFIED ?덉긽)",
+        "claim_text": "?멸퀎 ?앸챸泥닿? 吏援щ? 諛⑸Ц???곸씠 ?덈떎.",
         "evidence_topk": [
             {
                 "evid_id": "ev_1",
-                "title": "UFO 목격담",
+                "title": "UFO 紐⑷꺽??,
                 "url": "https://ufo.example.com",
-                "snippet": "일부 사람들은 미확인 비행물체를 목격했다고 주장하지만, 과학적으로 검증된 증거는 없다.",
+                "snippet": "?쇰? ?щ엺?ㅼ? 誘명솗??鍮꾪뻾臾쇱껜瑜?紐⑷꺽?덈떎怨?二쇱옣?섏?留? 怨쇳븰?곸쑝濡?寃利앸맂 利앷굅???녿떎.",
                 "source_type": "WEB_URL",
             },
         ],
@@ -126,8 +126,8 @@ TEST_CASES = [
     },
     {
         "id": 5,
-        "name": "증거 없음 (UNVERIFIED 강제)",
-        "claim_text": "2050년에 한국 인구는 3천만 명이 될 것이다.",
+        "name": "利앷굅 ?놁쓬 (UNVERIFIED 媛뺤젣)",
+        "claim_text": "2050?꾩뿉 ?쒓뎅 ?멸뎄??3泥쒕쭔 紐낆씠 ??寃껋씠??",
         "evidence_topk": [],
         "expected_stance": "UNVERIFIED",
     },
@@ -135,7 +135,7 @@ TEST_CASES = [
 
 
 # ============================================================================
-# 파이프라인 실행
+# ?뚯씠?꾨씪???ㅽ뻾
 # ============================================================================
 
 def run_slm2_pipeline(
@@ -144,7 +144,7 @@ def run_slm2_pipeline(
     language: str = "ko",
 ) -> dict:
     """
-    Stage 6-8 파이프라인 실행.
+    Stage 6-7 + Stage 8 Aggregator ?뚯씠?꾨씪???ㅽ뻾.
 
     Returns:
         {
@@ -172,15 +172,15 @@ def run_slm2_pipeline(
     start_time = time.time()
 
     # Stage 6: Supportive
-    logger.info(f"[{trace_id}] Stage 6 실행 중...")
+    logger.info(f"[{trace_id}] Stage 6 ?ㅽ뻾 以?..")
     state = stage6_run(state)
 
     # Stage 7: Skeptic
-    logger.info(f"[{trace_id}] Stage 7 실행 중...")
+    logger.info(f"[{trace_id}] Stage 7 ?ㅽ뻾 以?..")
     state = stage7_run(state)
 
     # Stage 8: Aggregate
-    logger.info(f"[{trace_id}] Stage 8 실행 중...")
+    logger.info(f"[{trace_id}] Stage 8 ?ㅽ뻾 以?..")
     state = stage8_run(state)
 
     elapsed_ms = int((time.time() - start_time) * 1000)
@@ -190,38 +190,38 @@ def run_slm2_pipeline(
 
 
 def print_result(case: dict, result: dict):
-    """결과 출력."""
+    """寃곌낵 異쒕젰."""
     print("\n" + "=" * 70)
-    print(f"테스트 케이스 #{case['id']}: {case['name']}")
+    print(f"?뚯뒪??耳?댁뒪 #{case['id']}: {case['name']}")
     print("=" * 70)
 
-    print(f"\n[주장] {case['claim_text']}")
-    print(f"[증거 수] {len(case['evidence_topk'])}")
-    print(f"[예상 결과] {case['expected_stance']}")
+    print(f"\n[二쇱옣] {case['claim_text']}")
+    print(f"[利앷굅 ?? {len(case['evidence_topk'])}")
+    print(f"[?덉긽 寃곌낵] {case['expected_stance']}")
 
     draft = result.get("draft_verdict", {})
-    print(f"\n[실제 결과]")
+    print(f"\n[?ㅼ젣 寃곌낵]")
     print(f"  - stance: {draft.get('stance')}")
     print(f"  - confidence: {draft.get('confidence', 0):.2f}")
-    print(f"  - citations: {len(draft.get('citations', []))}개")
+    print(f"  - citations: {len(draft.get('citations', []))}媛?)
     print(f"  - quality_score: {result.get('quality_score', 0)}")
     print(f"  - latency: {result.get('latency_ms', 0)}ms")
 
-    # 상세 정보
+    # ?곸꽭 ?뺣낫
     if draft.get("reasoning_bullets"):
-        print(f"\n[추론 근거]")
+        print(f"\n[異붾줎 洹쇨굅]")
         for bullet in draft["reasoning_bullets"][:5]:
-            print(f"  • {bullet}")
+            print(f"  ??{bullet}")
 
     if draft.get("citations"):
-        print(f"\n[인용]")
+        print(f"\n[?몄슜]")
         for cit in draft["citations"][:3]:
-            print(f"  • [{cit.get('evid_id')}] {cit.get('quote', '')[:50]}...")
+            print(f"  ??[{cit.get('evid_id')}] {cit.get('quote', '')[:50]}...")
 
-    # 일치 여부
+    # ?쇱튂 ?щ?
     match = draft.get("stance") == case["expected_stance"]
-    status = "✓ PASS" if match else "✗ FAIL"
-    print(f"\n[결과] {status}")
+    status = "??PASS" if match else "??FAIL"
+    print(f"\n[寃곌낵] {status}")
 
     return match
 
@@ -231,40 +231,40 @@ def print_result(case: dict, result: dict):
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="SLM2 파이프라인 데모")
-    parser.add_argument("--case", type=int, help="특정 테스트 케이스만 실행 (1-5)")
-    parser.add_argument("--all", action="store_true", help="모든 테스트 케이스 실행")
+    parser = argparse.ArgumentParser(description="SLM2 ?뚯씠?꾨씪???곕え")
+    parser.add_argument("--case", type=int, help="?뱀젙 ?뚯뒪??耳?댁뒪留??ㅽ뻾 (1-5)")
+    parser.add_argument("--all", action="store_true", help="紐⑤뱺 ?뚯뒪??耳?댁뒪 ?ㅽ뻾")
     args = parser.parse_args()
 
     print("=" * 70)
-    print("SLM2 파이프라인 데모 (Stage 6-8)")
+    print("SLM2 ?뚯씠?꾨씪???곕え (Stage 6-7 + Stage 8 Aggregator)")
     print("=" * 70)
 
-    # 연결 확인
+    # ?곌껐 ?뺤씤
     try:
         from app.stages._shared.slm_client import SLMConfig
         config = SLMConfig.from_env()
-        print(f"\nSLM 서버: {config.base_url}")
-        print(f"모델: {config.model}")
+        print(f"\nSLM ?쒕쾭: {config.base_url}")
+        print(f"紐⑤뜽: {config.model}")
         print(f"max_tokens: {config.max_tokens}")
     except Exception as e:
-        logger.error(f"설정 로드 실패: {e}")
+        logger.error(f"?ㅼ젙 濡쒕뱶 ?ㅽ뙣: {e}")
         sys.exit(1)
 
-    # 테스트 케이스 선택
+    # ?뚯뒪??耳?댁뒪 ?좏깮
     if args.case:
         cases = [c for c in TEST_CASES if c["id"] == args.case]
         if not cases:
-            print(f"케이스 #{args.case}를 찾을 수 없습니다.")
+            print(f"耳?댁뒪 #{args.case}瑜?李얠쓣 ???놁뒿?덈떎.")
             sys.exit(1)
     elif args.all:
         cases = TEST_CASES
     else:
-        # 기본: 첫 번째 케이스만
+        # 湲곕낯: 泥?踰덉㎏ 耳?댁뒪留?
         cases = TEST_CASES[:1]
-        print("\n(기본: 케이스 #1만 실행. --all 옵션으로 전체 실행)")
+        print("\n(湲곕낯: 耳?댁뒪 #1留??ㅽ뻾. --all ?듭뀡?쇰줈 ?꾩껜 ?ㅽ뻾)")
 
-    # 실행
+    # ?ㅽ뻾
     passed = 0
     failed = 0
 
@@ -279,12 +279,12 @@ def main():
             else:
                 failed += 1
         except Exception as e:
-            logger.exception(f"케이스 #{case['id']} 실행 실패: {e}")
+            logger.exception(f"耳?댁뒪 #{case['id']} ?ㅽ뻾 ?ㅽ뙣: {e}")
             failed += 1
 
-    # 요약
+    # ?붿빟
     print("\n" + "=" * 70)
-    print(f"결과 요약: {passed}/{passed + failed} 통과")
+    print(f"寃곌낵 ?붿빟: {passed}/{passed + failed} ?듦낵")
     print("=" * 70)
 
     sys.exit(0 if failed == 0 else 1)
@@ -292,3 +292,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
