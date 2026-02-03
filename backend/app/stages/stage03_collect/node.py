@@ -4,6 +4,7 @@ import logging
 import asyncio
 import os
 import re
+import difflib
 from typing import List, Dict, Any
 from app.db.session import SessionLocal
 from app.services.wiki_retriever import retrieve_wiki_hits
@@ -35,7 +36,7 @@ async def _search_wiki(query: str, search_mode: str) -> List[Dict[str, Any]]:
                     question=query,
                     top_k=5,         
                     window=2,        
-                    page_limit=5,
+                    page_limit=10,
                     embed_missing=True,
                     search_mode=search_mode
                 )
@@ -80,7 +81,7 @@ async def _search_naver(query: str) -> List[Dict[str, Any]]:
             "X-Naver-Client-Id": client_id,
             "X-Naver-Client-Secret": client_secret
         }
-        params = {"query": safe_query, "display": 5, "sort": "sim"}
+        params = {"query": safe_query, "display": 10, "sort": "sim"}
         
         # Offload sync HTTP request
         resp = await asyncio.to_thread(requests.get, url, headers=headers, params=params)
@@ -115,7 +116,7 @@ async def _search_duckduckgo(query: str) -> List[Dict[str, Any]]:
         def _sync_ddg():
             with DDGS() as ddgs:
                 # text() returns iterator, consume it
-                return list(ddgs.text(query, max_results=5))
+                return list(ddgs.text(query, max_results=10))
 
         ddg_results = await asyncio.to_thread(_sync_ddg)
         
@@ -260,17 +261,85 @@ def run_web(state: dict) -> dict:
         loop.close()
         return out
 
+def _normalize_url_simple(url: str) -> str:
+    """Simple URL normalization for comparison (strip protocol, www, trailing slash)."""
+    if not url:
+        return ""
+    # Remove protocol
+    u = re.sub(r"^https?://", "", url)
+    # Remove www.
+    u = re.sub(r"^www\.", "", u)
+    # Remove trailing slash
+    u = u.rstrip("/")
+    u = u.rstrip("/")
+    return u.lower()
+
+def _is_similar_title(t1: str, t2: str, threshold: float = 0.9) -> bool:
+    """Check if two titles are similar using SequenceMatcher."""
+    if not t1 or not t2:
+        return False
+    # Normalize titles simple (remove special chars, lowercase)
+    def norm(t):
+        return re.sub(r"[^\w\s]", "", t).lower().strip()
+    
+    nt1, nt2 = norm(t1), norm(t2)
+    if not nt1 or not nt2:
+        return False
+        
+    return difflib.SequenceMatcher(None, nt1, nt2).ratio() > threshold
+
 def run_merge(state: dict) -> dict:
-    """Merge Wiki and Web candidates."""
+    """Merge Wiki and Web candidates with Self-Reference Filtering."""
     wiki = state.get("wiki_candidates", [])
     web = state.get("web_candidates", [])
     
-    # Deduplicate by URL or content hash if needed, but for now simple concatenation
-    # Maybe prioritize Wiki?
+    # Check for canonical source URL (the article being checked)
+    canonical = state.get("canonical_evidence", {}) or {}
+    source_url = canonical.get("source_url", "")
+    norm_source = _normalize_url_simple(source_url)
     
-    all_candidates = wiki + web
-    logger.info(f"Stage 3 (Merge) Complete. Total {len(all_candidates)} candidates.")
-    return {"evidence_candidates": all_candidates}
+    all_candidates = []
+    
+    # Merge and Filter
+    raw_candidates = wiki + web
+    for cand in raw_candidates:
+        cand_url = cand.get("url", "")
+        norm_cand = _normalize_url_simple(cand_url)
+        
+        # Filter 1: Exact URL match (Self-Reference)
+        if norm_source and norm_cand == norm_source:
+            logger.info(f"Filtering self-reference URL: {cand_url}")
+            continue
+            
+        # Filter 2: Naver News redundancy (e.g. source is n.news.naver.com, candidate is same)
+        # Often Naver news URLs have params like ?sid=101. 
+        # Ideally we check path similarity, but for now exact normalized match + basic param stripping is safer.
+        # Let's trust normalize for now.
+        
+        # Filter 2: Naver News redundancy (e.g. source is n.news.naver.com, candidate is same)
+        # Often Naver news URLs have params like ?sid=101. 
+        # Ideally we check path similarity, but for now exact normalized match + basic param stripping is safer.
+        # Let's trust normalize for now.
+        
+        # Filter 3: Title Similarity (Semantic Filter)
+        # Check against Source Article Title
+        source_title = canonical.get("article_title", "")
+        cand_title = cand.get("title", "")
+        
+        if source_title and _is_similar_title(source_title, cand_title, threshold=0.9):
+            logger.info(f"Filtering self-reference Title: {cand_title} (Source: {source_title})")
+            continue
+            
+        all_candidates.append(cand)
+    
+    logger.info(f"Stage 3 (Merge) Complete. Total {len(all_candidates)} candidates (Filtered {len(raw_candidates) - len(all_candidates)}).")
+    return {
+        "evidence_candidates": all_candidates,
+        "wiki_candidates": None,
+        "web_candidates": None,
+        "search_queries": None,  # queries are no longer needed
+        "query_variants": None   # variants are no longer needed
+    }
 
 # Legacy run for compatibility if needed (wraps all)
 def run(state: dict) -> dict:

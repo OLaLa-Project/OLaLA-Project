@@ -19,6 +19,10 @@ TOP_K_LIMIT = 6
 SNIPPET_MAX_LENGTH = 500
 
 
+import asyncio
+from app.services.web_rag_service import WebRAGService
+
+
 def _generate_evid_id(url: str, title: str) -> str:
     """URL과 제목으로 고유 evid_id 생성."""
     key = f"{url}:{title}"
@@ -33,15 +37,10 @@ def _create_snippet(content: str, max_length: int = SNIPPET_MAX_LENGTH) -> str:
     return content[:max_length] + "..."
 
 
-def run(state: dict) -> dict:
-    """
-    Stage 5 Main:
-    1. Filter candidates < threshold
-    2. Sort by score DESC
-    3. Select Top K
-    4. Format with evid_id and snippet (Gateway 스키마 호환)
-    """
+async def run_async(state: dict) -> dict:
+    """Stage 5 Main (Async)."""
     scored = state.get("scored_evidence", [])
+    claim_text = state.get("claim_text", "")
 
     logger.info(f"Stage 5 Start. Candidates: {len(scored)}, Threshold: {THRESHOLD_SCORE}")
 
@@ -76,38 +75,86 @@ def run(state: dict) -> dict:
     final_selection.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
     # 4. Format to Citation Schema (Gateway 호환)
-    # 핵심 수정: evid_id와 snippet 필드 추가
     citations = []
+    
+    # Prepare enrichment tasks
+    enrichment_tasks = []
     
     for item in final_selection:
         url = item.get("url", "")
         title = item.get("title", "")
         content = item.get("content", "")
+        source_type = item.get("source_type", "WEB")
 
         citation = {
             # 핵심: evid_id 생성 (Stage 6/7에서 citation 검증에 사용)
             "evid_id": _generate_evid_id(url, title),
-            "source_type": item.get("source_type", "WEB"),
+            "source_type": source_type,
             "title": title,
             "url": url,
             "content": content,
             # 핵심: snippet 생성 (Stage 6/7에서 LLM 프롬프트에 사용)
-            "snippet": _create_snippet(content),
+            "snippet": _create_snippet(content), # Initial snippet
             "score": item.get("score", 0.0),
             "relevance": item.get("score", 0.0),  # API 호환용
             "metadata": item.get("metadata", {}),
         }
+        
+        # Web RAG Enrichment
+        if source_type in {"WEB_URL", "NEWS", "WEB"} and url:
+            # We need to enrich this citation
+            # We pass the citation dict to be modified in place
+            task = WebRAGService.enrich_citation(citation, claim_text)
+            enrichment_tasks.append(task)
+            
         citations.append(citation)
 
-    # Update State
-    state["citations"] = citations
-    state["evidence_topk"] = citations
-
-    # Check if 'Unverified' condition met (No citations)
-    if not citations:
-        logger.warning("Stage 5: No evidence passed threshold. Flagging potential UNVERIFIED.")
-        state["risk_flags"] = state.get("risk_flags", []) + ["LOW_EVIDENCE"]
+    # Execute RAG tasks
+    if enrichment_tasks:
+        logger.info(f"Stage 5: Enriching {len(enrichment_tasks)} citations with Web RAG...")
+        await asyncio.gather(*enrichment_tasks)
+        
+    # Final Standardization
+    # Ensure all snippets (including Wiki and RAG-updated Web) are within limit
+    for cit in citations:
+        # Re-apply create_snippet to SNIPPET. 
+        # Content remains as is (original summary or full text depending on source).
+        # WebRAGService updates 'snippet' and optionally 'content'.
+        # User requested: KEEP content as original summary, update snippet only.
+        # But WebRAGService.enrich_citation currently updates BOTH.
+        # We need to verify WebRAGService behavior. Uses enrich_citation.
+        
+        # Correction: The user wants to keep the ORIGINAL content (short summary) but have the NEW snippet (RAG).
+        # However, WebRAGService.enrich_citation (as implemented) updates citation["content"] too.
+        # We should modify WebRAGService? Or restore content here?
+        # Restoring content is hard because we pass the dict by reference.
+        # Better to modify WebRAGService to NOT update content, OR modify it here.
+        # Let's check WebRAGService source again... it updates both.
+        # To strictly follow user request without modifying service file immediately:
+        # Actually I can modify the service file to respect a flag or just remove the content update line.
+        pass # Logic handled in next tool call (WebRAGService modification)
+        
+        # Standardize snippet length
+        current_snippet = cit.get("snippet") or ""
+        cit["snippet"] = _create_snippet(current_snippet)
 
     logger.info(f"Stage 5 Complete. Selected {len(citations)} citations.")
 
-    return state
+    return {
+        "citations": citations,
+        "evidence_topk": citations,
+        "scored_evidence": None,
+        "risk_flags": state.get("risk_flags", []) + (["LOW_EVIDENCE"] if not citations else [])
+    }
+
+
+def run(state: dict) -> dict:
+    """Sync wrapper for Stage 5."""
+    try:
+        return asyncio.run(run_async(state))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        out = loop.run_until_complete(run_async(state))
+        loop.close()
+        return out

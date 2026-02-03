@@ -60,8 +60,9 @@ def run(state: dict) -> dict:
         cand["score"] = round(final_score, 4)
         scored_evidence.append(cand)
 
-    # Update State
-    state["scored_evidence"] = scored_evidence
     logger.info(f"Stage 4 Complete. Scoring finished.")
     
-    return state
+    return {
+        "scored_evidence": scored_evidence,
+        "evidence_candidates": None
+    }
