@@ -346,16 +346,23 @@ def run(state: dict) -> dict:
             claim_text, draft_verdict, evidence_topk, quality_score, language
         )
         state["prompt_judge_user"] = user_prompt
+        state["prompt_judge_system"] = system_prompt
 
         runtime = _get_llm_runtime()
 
+        last_response: str = ""
+
         def operation():
             def call_fn():
-                return _call_llm(system_prompt, user_prompt)
+                nonlocal last_response
+                last_response = _call_llm(system_prompt, user_prompt)
+                return last_response
 
             def retry_call_fn(retry_prompt: str):
                 combined_prompt = f"{system_prompt}\n\n{retry_prompt}"
-                return _call_llm(combined_prompt, user_prompt)
+                nonlocal last_response
+                last_response = _call_llm(combined_prompt, user_prompt)
+                return last_response
 
             try:
                 parsed = parse_judge_json_with_retry(
@@ -364,8 +371,10 @@ def run(state: dict) -> dict:
                     retry_call_fn=retry_call_fn,
                 )
             except JSONParseError as e:
+                state["slm_raw_judge"] = last_response
                 raise GatewayValidationError(f"JSON parsing failed: {e}", cause=e)
 
+            state["slm_raw_judge"] = last_response
             parsed = validate_judge_output(parsed)
             return _postprocess_judge_result(parsed, draft_verdict, evidence_topk, quality_score)
 

@@ -1,25 +1,6 @@
-"""
-Stage 1 - Normalize (LLM-Enhanced)
-
-사용자 입력(텍스트/URL)을 정규화하여 검증 가능한 단일 주장(claim)으로 변환합니다.
-
-Input state keys:
-    - trace_id: str
-    - input_type: "url" | "text" | "image"
-    - input_payload: str
-    - user_request: Optional[str]
-    - language: "ko" | "en" (default: "ko")
-
-Output state keys:
-    - claim_text: str (정규화된 주장 문장)
-    - language: str
-    - canonical_evidence: dict (URL, 본문, 제목 등)
-    - entity_map: dict (추출된 엔티티)
-"""
-
 import re
+import html as html_lib
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse, urlunparse
@@ -34,7 +15,7 @@ PROMPT_FILE = Path(__file__).parent / "prompt_normalize.txt"
 
 # 설정
 DEFAULT_LANGUAGE = "ko"
-MAX_CONTENT_LENGTH = 1000
+MAX_CONTENT_LENGTH = None
 
 
 @lru_cache(maxsize=1)
@@ -93,10 +74,26 @@ def fetch_url_content(url: str) -> Dict[str, str]:
             downloaded, include_comments=False, include_tables=False
         )
         if result:
-            return {
-                "text": getattr(result, "text", "") or (result.get("text", "") if isinstance(result, dict) else ""),
-                "title": getattr(result, "title", "") or (result.get("title", "") if isinstance(result, dict) else ""),
-            }
+            text = getattr(result, "text", "") or (result.get("text", "") if isinstance(result, dict) else "")
+            title = getattr(result, "title", "") or (result.get("title", "") if isinstance(result, dict) else "")
+
+            # Fallback: extract title from HTML meta/title tags
+            if not title and downloaded:
+                og_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', downloaded, re.IGNORECASE)
+                if og_match:
+                    title = og_match.group(1).strip()
+                if not title:
+                    meta_match = re.search(r'<meta[^>]+name=["\']title["\'][^>]+content=["\']([^"\']+)["\']', downloaded, re.IGNORECASE)
+                    if meta_match:
+                        title = meta_match.group(1).strip()
+                if not title:
+                    title_match = re.search(r'<title[^>]*>(.*?)</title>', downloaded, re.IGNORECASE | re.DOTALL)
+                    if title_match:
+                        title = re.sub(r"\s+", " ", title_match.group(1)).strip()
+                if title:
+                    title = html_lib.unescape(title)
+
+            return {"text": text, "title": title}
     except Exception as e:
         logger.warning(f"URL 콘텐츠 추출 실패 ({url}): {e}")
 
@@ -106,33 +103,6 @@ def fetch_url_content(url: str) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 # 텍스트 분석 유틸리티
 # ---------------------------------------------------------------------------
-
-def detect_language(text: str) -> str:
-    """한국어/영어 간이 감지."""
-    if not text:
-        return DEFAULT_LANGUAGE
-    korean = len(re.findall(r'[가-힣]', text))
-    english = len(re.findall(r'[a-zA-Z]', text))
-    return "ko" if korean >= english else "en"
-
-
-def extract_temporal_info(text: str, timestamp: Optional[str] = None) -> Dict[str, Any]:
-    """텍스트에서 날짜/시간 패턴 추출."""
-    patterns = [
-        r'\d{4}년\s*\d{1,2}월\s*\d{1,2}일',
-        r'\d{4}년\s*\d{1,2}월',
-        r'\d{4}-\d{2}-\d{2}',
-        r'\d{4}\.\d{2}\.\d{2}',
-    ]
-    dates = []
-    for p in patterns:
-        dates.extend(re.findall(p, text or ""))
-
-    return {
-        "extracted_dates": list(set(dates)),
-        "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
-    }
-
 
 def extract_entities(text: str) -> List[str]:
     """간이 엔티티 추출 (고유명사 후보)."""
@@ -157,15 +127,29 @@ def extract_entities(text: str) -> List[str]:
 from app.stages._shared.guardrails import parse_json_safe
 from app.gateway.schemas.normalization import NormalizedClaim
 
+def split_sentences(text: str) -> List[str]:
+    if not text:
+        return []
+    # 간단한 문장 분리 (한글/영문 혼합 대응)
+    raw = re.split(r'(?<=[.!?。！？])\s+|\n+', text.strip())
+    sentences = []
+    for s in raw:
+        s_clean = s.strip()
+        if s_clean:
+            sentences.append(s_clean)
+    return sentences
+
 def build_normalize_user_prompt(
     user_input: str,
     article_title: str,
     article_content: str,
 ) -> str:
-    content_snippet = article_content[:MAX_CONTENT_LENGTH] if article_content else ""
+    sentences = split_sentences(article_content)
+    sentences_block = "\n".join([f"- {s}" for s in sentences]) if sentences else "- (문장 없음)"
     return f"""[사용자 입력]: {user_input}
 [기사 제목]: {article_title}
-[기사 본문(일부)]: {content_snippet}
+[SENTENCES]
+{sentences_block}
 
 위 내용을 바탕으로 JSON 포맷의 출력을 생성하세요."""
 
@@ -174,7 +158,7 @@ def normalize_claim_with_llm(
     user_input: str,
     article_title: str,
     article_content: str,
-) -> NormalizedClaim:
+) -> tuple[NormalizedClaim, str, Optional[dict]]:
     """
     SLM을 사용해 사용자 입력 + 기사 내용으로부터 정규화된 주장 및 의도를 추출.
     """
@@ -192,15 +176,20 @@ def normalize_claim_with_llm(
         if parsed:
             # Pydantic validation
             try:
-                return NormalizedClaim(**parsed)
+                if parsed.get("original_intent") not in {"verification", "exploration"}:
+                    parsed["original_intent"] = "verification"
+                return NormalizedClaim(**parsed), response, parsed
             except Exception as e:
                 logger.warning(f"NormalizedClaim 파싱 실패: {e}, raw={parsed}")
                 # Fallback to loose dictionary if schema mismatch, or fix fields
+                intent = parsed.get("original_intent")
+                if intent not in {"verification", "exploration"}:
+                    intent = "verification"
                 return NormalizedClaim(
                     claim_text=parsed.get("claim_text") or article_title or user_input,
-                    original_intent=parsed.get("original_intent", "verification"),
+                    original_intent=intent,
                     key_entities=parsed.get("key_entities", [])
-                )
+                ), response, parsed
     except SLMError as e:
         logger.warning(f"LLM 정규화 실패: {e}")
 
@@ -210,7 +199,7 @@ def normalize_claim_with_llm(
         claim_text=fallback_text,
         original_intent="verification", # Default assumption
         key_entities=extract_entities(fallback_text) # Regex fallback
-    )
+    ), "", None
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +254,7 @@ def run(state: dict) -> dict:
             fetched = fetch_url_content(url_info["normalized_url"])
             logger.info(
                 f"[{trace_id}] URL 콘텐츠: {len(fetched['text'])} chars, "
-                f"제목: {fetched['title'][:50]}"
+                f"제목: {fetched['title'][:100]}"
             )
 
         # ── 3. 주장 정규화 ──
@@ -278,32 +267,34 @@ def run(state: dict) -> dict:
             )
             logger.info(f"[{trace_id}] 기본 정규화 사용")
         else:
+            system_prompt = load_system_prompt()
             user_prompt = build_normalize_user_prompt(
                 user_input=snippet,
                 article_title=fetched["title"],
                 article_content=fetched["text"],
             )
+            state["prompt_normalize_system"] = system_prompt
             state["prompt_normalize_user"] = user_prompt
-            normalized_obj = normalize_claim_with_llm(
+            normalized_obj, slm_raw, parsed = normalize_claim_with_llm(
                 user_input=snippet,
                 article_title=fetched["title"],
                 article_content=fetched["text"],
             )
+            state["slm_raw_normalize"] = slm_raw
+            if parsed and isinstance(parsed.get("claims"), list):
+                state["normalize_claims"] = parsed.get("claims")
         
         claim_text = normalized_obj.claim_text
-        logger.info(f"[{trace_id}] 정규화된 주장: {claim_text[:80]} (의도: {normalized_obj.original_intent})")
+        logger.info(f"[{trace_id}] 정규화된 주장: {claim_text[:150]} (의도: {normalized_obj.original_intent})")
 
         # ── 4. 부가 정보 추출 ──
-        target_text = snippet if snippet else fetched["text"]
-        detected_lang = detect_language(claim_text)
-        temporal = extract_temporal_info(target_text)
-        # Use LLM extracted entities if available, else regex fallback is already inside object or here
-        entities = normalized_obj.key_entities if normalized_obj.key_entities else extract_entities(claim_text)
+        # Use LLM extracted entities if available
+        entities = normalized_obj.key_entities or []
 
         # ── 5. State 업데이트 ──
         state["claim_text"] = claim_text
         state["original_intent"] = normalized_obj.original_intent # New State Field
-        state["language"] = language or detected_lang
+        state["language"] = language or DEFAULT_LANGUAGE
 
         state["canonical_evidence"] = {
             "snippet": snippet,
@@ -312,8 +303,6 @@ def run(state: dict) -> dict:
             "source_url": url_info["normalized_url"],
             "url_valid": url_info["is_valid"],
             "domain": url_info["domain"],
-            "temporal_context": temporal,
-            "detected_language": detected_lang,
         }
 
         state["entity_map"] = {
@@ -322,7 +311,7 @@ def run(state: dict) -> dict:
         }
 
         logger.info(
-            f"[{trace_id}] Stage1 완료: claim={claim_text[:50]}..., "
+            f"[{trace_id}] Stage1 완료: claim={claim_text[:150]}..., "
             f"lang={state['language']}, entities={len(entities)}"
         )
 

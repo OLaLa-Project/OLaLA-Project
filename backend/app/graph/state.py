@@ -35,10 +35,21 @@ class GraphState(TypedDict, total=False):
     final_verdict: Dict[str, Any]
     user_result: Dict[str, Any]
     prompt_normalize_user: str
+    prompt_normalize_system: str
     prompt_querygen_user: str
+    prompt_querygen_system: str
+    slm_raw_normalize: str
+    slm_raw_querygen: str
+    normalize_claims: list[dict]
     prompt_support_user: str
+    prompt_support_system: str
     prompt_skeptic_user: str
+    prompt_skeptic_system: str
     prompt_judge_user: str
+    prompt_judge_system: str
+    slm_raw_support: str
+    slm_raw_skeptic: str
+    slm_raw_judge: str
 
     stage_logs: Annotated[List[Dict[str, Any]], operator.add]
     stage_outputs: Annotated[Dict[str, Any], operator.or_]

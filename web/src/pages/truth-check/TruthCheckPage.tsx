@@ -22,6 +22,8 @@ type StageResult = {
     status: StageStatus;
     summary?: string;
     prompt?: string;
+    systemPrompt?: string;
+    rawOutput?: string;
     detail?: string;
     errorMessage?: string;
     startedAt?: string;
@@ -34,7 +36,7 @@ type StreamEvent =
     | { event: 'complete'; data: Record<string, any> };
 
 const STAGE_META: Array<Omit<StageResult, 'status'>> = [
-    { id: 'stage01_normalize', label: '01 정규화', description: '입력 클레임 표준화' },
+    { id: 'stage01_normalize', label: '01 표준화', description: '입력 클레임 표준화' },
     { id: 'stage02_querygen', label: '02 쿼리 생성', description: '검색 쿼리 생성' },
     { id: 'stage03_wiki', label: '03-1 위키 수집', description: '위키 기반 증거 수집' },
     { id: 'stage03_web', label: '03-2 웹 수집', description: '웹 기반 증거 수집' },
@@ -66,13 +68,33 @@ const extractPrompt = (stageId: StageId, data?: Record<string, any>) => {
     return undefined;
 };
 
+const extractSystemPrompt = (stageId: StageId, data?: Record<string, any>) => {
+    if (!data) return undefined;
+    if (stageId === 'stage01_normalize') return data.prompt_normalize_system;
+    if (stageId === 'stage02_querygen') return data.prompt_querygen_system;
+    if (stageId === 'stage06_verify_support') return data.prompt_support_system;
+    if (stageId === 'stage07_verify_skeptic') return data.prompt_skeptic_system;
+    if (stageId === 'stage09_judge') return data.prompt_judge_system;
+    return undefined;
+};
+
+const extractRawOutput = (stageId: StageId, data?: Record<string, any>) => {
+    if (!data) return undefined;
+    if (stageId === 'stage01_normalize') return data.slm_raw_normalize;
+    if (stageId === 'stage02_querygen') return data.slm_raw_querygen;
+    if (stageId === 'stage06_verify_support') return data.slm_raw_support;
+    if (stageId === 'stage07_verify_skeptic') return data.slm_raw_skeptic;
+    if (stageId === 'stage09_judge') return data.slm_raw_judge;
+    return undefined;
+};
+
 const summarizeStageData = (stageId: StageId, data?: Record<string, any>) => {
     if (!data || Object.keys(data).length === 0) return '요약 준비 중';
 
     switch (stageId) {
         case 'stage01_normalize': {
             const claim = data.claim_text || data.canonical_evidence?.snippet;
-            return claim ? `정규화: ${String(claim).slice(0, 140)}` : '정규화 결과 생성';
+            return claim ? `핵심 주장: ${String(claim).slice(0, 300)}` : '표준화 결과 생성';
         }
         case 'stage02_querygen': {
             const variantCount = Array.isArray(data.query_variants) ? data.query_variants.length : 0;
@@ -137,29 +159,56 @@ export default function TruthCheckPage() {
     const abortControllerRef = useRef<AbortController | null>(null);
     const bufferRef = useRef<string>('');
 
-    const stageIndexMap = useMemo(() => {
-        const map = new Map<StageId, number>();
-        stages.forEach((stage, index) => {
-            map.set(stage.id, index);
-        });
-        return map;
-    }, [stages]);
-
-    const setStageStatus = (stageId: StageId, status: StageStatus, data?: Record<string, any>, errorMessage?: string) => {
-        setStages((prev) =>
-            prev.map((stage) => {
+    const handleStageComplete = (stageId: StageId, data: Record<string, any>) => {
+        setStages((prev) => {
+            const next = prev.map((stage) => {
                 if (stage.id !== stageId) return stage;
                 return {
                     ...stage,
-                    status,
-                    summary: data ? summarizeStageData(stageId, data) : stage.summary,
-                    prompt: data ? extractPrompt(stageId, data) : stage.prompt,
-                    detail: data ? formatDetail(data) : stage.detail,
-                    errorMessage: errorMessage ?? stage.errorMessage,
-                    endedAt: status === 'success' || status === 'error' || status === 'aborted' ? new Date().toISOString() : stage.endedAt,
+                    status: 'success',
+                    summary: summarizeStageData(stageId, data),
+                    prompt: extractPrompt(stageId, data),
+                    systemPrompt: extractSystemPrompt(stageId, data),
+                    rawOutput: extractRawOutput(stageId, data),
+                    detail: formatDetail(data),
+                    endedAt: new Date().toISOString(),
                 };
-            })
-        );
+            });
+
+            const setRunning = (id: StageId) => {
+                const idx = next.findIndex((s) => s.id === id);
+                if (idx >= 0 && next[idx].status === 'idle') {
+                    next[idx] = { ...next[idx], status: 'running', startedAt: new Date().toISOString() };
+                }
+            };
+
+            if (stageId === 'stage01_normalize') {
+                setRunning('stage02_querygen');
+            } else if (stageId === 'stage02_querygen') {
+                setRunning('stage03_wiki');
+                setRunning('stage03_web');
+            } else if (stageId === 'stage03_wiki' || stageId === 'stage03_web') {
+                const wikiDone = next.find((s) => s.id === 'stage03_wiki')?.status === 'success';
+                const webDone = next.find((s) => s.id === 'stage03_web')?.status === 'success';
+                if (wikiDone && webDone) {
+                    setRunning('stage03_merge');
+                }
+            } else if (stageId === 'stage03_merge') {
+                setRunning('stage04_score');
+            } else if (stageId === 'stage04_score') {
+                setRunning('stage05_topk');
+            } else if (stageId === 'stage05_topk') {
+                setRunning('stage06_verify_support');
+            } else if (stageId === 'stage06_verify_support') {
+                setRunning('stage07_verify_skeptic');
+            } else if (stageId === 'stage07_verify_skeptic') {
+                setRunning('stage08_aggregate');
+            } else if (stageId === 'stage08_aggregate') {
+                setRunning('stage09_judge');
+            }
+
+            return next;
+        });
     };
 
     const runPipeline = async () => {
@@ -214,25 +263,21 @@ export default function TruthCheckPage() {
                     try {
                         const event = JSON.parse(line) as StreamEvent;
                         if (event.event === 'stage_complete') {
-                            setStageStatus(event.stage, 'success', event.data);
-                            const currentIndex = stageIndexMap.get(event.stage);
-                            if (typeof currentIndex === 'number') {
-                                setStages((prev) => {
-                                    const next = [...prev];
-                                    const nextIndex = currentIndex + 1;
-                                    if (nextIndex < next.length && next[nextIndex].status === 'idle') {
-                                        next[nextIndex] = {
-                                            ...next[nextIndex],
-                                            status: 'running',
-                                            startedAt: new Date().toISOString(),
-                                        };
-                                    }
-                                    return next;
-                                });
-                            }
+                            handleStageComplete(event.stage, event.data);
                         } else if (event.event === 'error') {
                             if (event.stage) {
-                                setStageStatus(event.stage, 'error', undefined, event.data);
+                                setStages((prev) =>
+                                    prev.map((stage) =>
+                                        stage.id === event.stage
+                                            ? {
+                                                ...stage,
+                                                status: 'error',
+                                                errorMessage: event.data,
+                                                endedAt: new Date().toISOString(),
+                                            }
+                                            : stage
+                                    )
+                                );
                             }
                             setGeneralError(event.data);
                             setOverallStatus('error');
@@ -359,12 +404,12 @@ export default function TruthCheckPage() {
                                 stage.status === 'success'
                                     ? 'border-emerald-500/40 bg-emerald-500/10'
                                     : stage.status === 'error'
-                                    ? 'border-red-500/40 bg-red-500/10'
-                                    : stage.status === 'running'
-                                    ? 'border-sky-400/40 bg-sky-400/10'
-                                    : stage.status === 'aborted'
-                                    ? 'border-amber-400/40 bg-amber-400/10'
-                                    : 'border-white/10 bg-white/5';
+                                        ? 'border-red-500/40 bg-red-500/10'
+                                        : stage.status === 'running'
+                                            ? 'border-sky-400/40 bg-sky-400/10'
+                                            : stage.status === 'aborted'
+                                                ? 'border-amber-400/40 bg-amber-400/10'
+                                                : 'border-white/10 bg-white/5';
 
                             return (
                                 <div key={stage.id} className={`rounded-2xl border px-4 py-4 ${statusColor}`}>
@@ -388,6 +433,18 @@ export default function TruthCheckPage() {
                                         <details className="mt-3 text-xs text-slate-300">
                                             <summary className="cursor-pointer text-slate-200">Prompt 보기</summary>
                                             <pre className="mt-2 whitespace-pre-wrap break-words">{stage.prompt}</pre>
+                                        </details>
+                                    ) : null}
+                                    {stage.systemPrompt ? (
+                                        <details className="mt-3 text-xs text-slate-300">
+                                            <summary className="cursor-pointer text-slate-200">System Prompt 보기</summary>
+                                            <pre className="mt-2 whitespace-pre-wrap break-words">{stage.systemPrompt}</pre>
+                                        </details>
+                                    ) : null}
+                                    {stage.rawOutput ? (
+                                        <details className="mt-3 text-xs text-slate-300">
+                                            <summary className="cursor-pointer text-slate-200">SLM Raw 보기</summary>
+                                            <pre className="mt-2 whitespace-pre-wrap break-words">{stage.rawOutput}</pre>
                                         </details>
                                     ) : null}
                                     {stage.detail ? (

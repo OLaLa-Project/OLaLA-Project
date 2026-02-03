@@ -127,18 +127,26 @@ def run(state: dict) -> dict:
     system_prompt = load_system_prompt()
     user_prompt = build_user_prompt(claim_text, evidence_topk, language)
     state["prompt_skeptic_user"] = user_prompt
+    state["prompt_skeptic_system"] = system_prompt
 
     # SLM 호출 함수
+    last_response: str = ""
+
     def call_fn():
-        return call_slm2(system_prompt, user_prompt)
+        nonlocal last_response
+        last_response = call_slm2(system_prompt, user_prompt)
+        return last_response
 
     def retry_call_fn(retry_prompt: str):
         combined_prompt = f"{system_prompt}\n\n{retry_prompt}"
-        return call_slm2(combined_prompt, user_prompt)
+        nonlocal last_response
+        last_response = call_slm2(combined_prompt, user_prompt)
+        return last_response
 
     try:
         # JSON 파싱 with 재시도
         raw_verdict = parse_json_with_retry(call_fn, retry_call_fn=retry_call_fn)
+        state["slm_raw_skeptic"] = last_response
 
         # 정규화 및 검증
         verdict = build_draft_verdict(raw_verdict, evidence_topk)
@@ -151,14 +159,17 @@ def run(state: dict) -> dict:
 
     except JSONParseError as e:
         logger.error(f"[{trace_id}] JSON 파싱 최종 실패: {e}")
+        state["slm_raw_skeptic"] = last_response
         verdict = create_fallback_verdict(f"JSON 파싱 실패: {e}")
 
     except SLMError as e:
         logger.error(f"[{trace_id}] SLM 호출 실패: {e}")
+        state["slm_raw_skeptic"] = last_response
         verdict = create_fallback_verdict(f"SLM 호출 실패: {e}")
 
     except Exception as e:
         logger.exception(f"[{trace_id}] 예상치 못한 오류: {e}")
+        state["slm_raw_skeptic"] = last_response
         verdict = create_fallback_verdict(f"내부 오류: {e}")
 
     state["verdict_skeptic"] = verdict

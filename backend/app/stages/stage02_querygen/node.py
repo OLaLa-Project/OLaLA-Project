@@ -49,20 +49,28 @@ def load_system_prompt() -> str:
 def build_querygen_user_prompt(
     claim: str,
     context: Dict[str, Any],
+    claims: list[dict] | None = None,
 ) -> str:
     fetched_content = context.get("fetched_content", "")
     has_article = bool(fetched_content)
 
+    claims_block = ""
+    if claims:
+        lines = []
+        for item in claims:
+            text = item.get("주장") or item.get("claim") or ""
+            if text:
+                lines.append(f"- {text}")
+        if lines:
+            claims_block = "\n[핵심 주장 후보]\n" + "\n".join(lines)
+
     if has_article:
-        truncated = fetched_content[:MAX_CONTENT_LENGTH]
         context_str = json.dumps(
             {k: v for k, v in context.items() if k != "fetched_content"},
             ensure_ascii=False,
         )
         return f"""Input User Text: "{claim}"
-[첨부된 기사 내용 시작]
-{truncated}
-[첨부된 기사 내용 끝]
+{claims_block}
 
 Context Hints: {context_str}
 
@@ -70,6 +78,7 @@ Context Hints: {context_str}
 
     context_str = json.dumps(context, ensure_ascii=False, default=str)
     return f"""Input Text: "{claim}"
+{claims_block}
 Context Hints: {context_str}
 
 위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. `text` 필드는 절대 비워두면 안 됩니다."""
@@ -78,7 +87,8 @@ Context Hints: {context_str}
 def generate_queries_with_llm(
     claim: str,
     context: Dict[str, Any],
-) -> Dict[str, Any]:
+    claims: list[dict] | None = None,
+) -> tuple[Dict[str, Any], str]:
     """
     SLM을 사용해 검증용 쿼리를 생성합니다.
 
@@ -90,7 +100,7 @@ def generate_queries_with_llm(
     """
     system_prompt = load_system_prompt()
 
-    user_prompt = build_querygen_user_prompt(claim, context)
+    user_prompt = build_querygen_user_prompt(claim, context, claims)
 
     response = call_slm1(system_prompt, user_prompt)
     parsed = parse_json_safe(response)
@@ -108,7 +118,7 @@ def generate_queries_with_llm(
     if parsed is None:
         raise ValueError(f"JSON 파싱 최종 실패: {response[:200]}")
 
-    return parsed
+    return parsed, response
 
 
 def _render_prompt_template(template: str, state: Dict[str, Any]) -> str:
@@ -126,7 +136,7 @@ def _render_prompt_template(template: str, state: Dict[str, Any]) -> str:
 def generate_queries_with_prompt_override(
     state: Dict[str, Any],
     template: str,
-) -> Dict[str, Any]:
+) -> tuple[Dict[str, Any], str]:
     prompt = _render_prompt_template(template, state)
     response = call_slm1("", prompt)
     parsed = parse_json_safe(response)
@@ -140,7 +150,7 @@ def generate_queries_with_prompt_override(
     if parsed is None:
         raise ValueError(f"JSON 파싱 최종 실패: {response[:200]}")
     parsed["_prompt_used"] = prompt
-    return parsed
+    return parsed, response
 
 
 from app.gateway.schemas.common import SearchQuery, SearchQueryType
@@ -282,8 +292,9 @@ def run(state: dict) -> dict:
     try:
         # LLM 기반 쿼리 생성 (override prompt 지원)
         prompt_override = state.get("querygen_prompt") or ""
+        system_prompt = load_system_prompt()
         if prompt_override.strip():
-            parsed = generate_queries_with_prompt_override(state, prompt_override)
+            parsed, slm_raw = generate_queries_with_prompt_override(state, prompt_override)
             variants = _query_variants_from_team_a(parsed)
             if variants:
                 result = {
@@ -296,10 +307,22 @@ def run(state: dict) -> dict:
             else:
                 result = postprocess_queries(parsed, claim_text)
             state["prompt_querygen_user"] = parsed.get("_prompt_used")
+            state["prompt_querygen_system"] = ""
+            state["slm_raw_querygen"] = slm_raw
         else:
-            state["prompt_querygen_user"] = build_querygen_user_prompt(claim_text, context)
-            parsed = generate_queries_with_llm(claim_text, context)
+            state["prompt_querygen_user"] = build_querygen_user_prompt(
+                claim_text,
+                context,
+                state.get("normalize_claims"),
+            )
+            state["prompt_querygen_system"] = system_prompt
+            parsed, slm_raw = generate_queries_with_llm(
+                claim_text,
+                context,
+                state.get("normalize_claims"),
+            )
             result = postprocess_queries(parsed, claim_text)
+            state["slm_raw_querygen"] = slm_raw
 
         logger.info(
             f"[{trace_id}] Stage2 LLM 완료: "

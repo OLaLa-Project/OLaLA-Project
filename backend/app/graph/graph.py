@@ -1,4 +1,5 @@
 import uuid
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -6,6 +7,7 @@ from app.core.schemas import TruthCheckRequest, TruthCheckResponse, Citation, Mo
 from app.graph.state import GraphState
 from app.graph.stage_logger import attach_stage_log, log_stage_event, prepare_stage_output
 from app.gateway.stage_manager import run as run_stage
+from app.stages.stage03_collect.node import run_wiki_async, run_web_async
 
 try:
     from langgraph.graph import StateGraph, END  # type: ignore
@@ -71,6 +73,18 @@ def _async_node_wrapper(stage_name: str):
         return await asyncio.to_thread(fn, state)
     return _async_runner
 
+
+def _async_stage_wrapper(stage_name: str, async_fn):
+    async def _runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        logger = logging.getLogger("uvicorn.error")
+        log_stage_event(state, stage_name, "start")
+        logger.info(f"[{state.get('trace_id', 'unknown')}] {stage_name} start")
+        start = time.time()
+        out = await async_fn(state)
+        logger.info(f"[{state.get('trace_id', 'unknown')}] {stage_name} end")
+        return attach_stage_log(state, stage_name, out, started_at=start)
+    return _runner
+
 def _async_adapter_wrapper():
     async def _runner(state: Dict[str, Any]) -> Dict[str, Any]:
          # Adapter is simple sync
@@ -91,8 +105,8 @@ def build_langgraph() -> Any:
     graph.add_node("adapter_queries", _async_adapter_wrapper())
     
     # 2. Split Stage 3 (Granular Visibility matched to Goold Logic)
-    graph.add_node("stage03_wiki", _async_node_wrapper("stage03_wiki"))
-    graph.add_node("stage03_web", _async_node_wrapper("stage03_web"))
+    graph.add_node("stage03_wiki", _async_stage_wrapper("stage03_wiki", run_wiki_async))
+    graph.add_node("stage03_web", _async_stage_wrapper("stage03_web", run_web_async))
     graph.add_node("stage03_merge", _async_node_wrapper("stage03_merge"))
     
     # 3. Intermediate Processing
@@ -153,7 +167,14 @@ STAGE_SEQUENCE = [
 ]
 
 STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
-    "stage01_normalize": ["claim_text", "canonical_evidence", "entity_map", "prompt_normalize_user"],
+    "stage01_normalize": [
+        "claim_text",
+        "canonical_evidence",
+        "entity_map",
+        "prompt_normalize_user",
+        "prompt_normalize_system",
+        "slm_raw_normalize",
+    ],
     "stage02_querygen": [
         "query_variants",
         "keyword_bundles",
@@ -161,6 +182,8 @@ STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
         "querygen_claims",
         "querygen_prompt_used",
         "prompt_querygen_user",
+        "prompt_querygen_system",
+        "slm_raw_querygen",
     ],
     "adapter_queries": ["search_queries"],
     "stage03_wiki": ["wiki_candidates"],
@@ -168,10 +191,17 @@ STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "stage03_merge": ["evidence_candidates"],
     "stage04_score": ["scored_evidence"],
     "stage05_topk": ["citations", "evidence_topk", "risk_flags"],
-    "stage06_verify_support": ["verdict_support", "prompt_support_user"],
-    "stage07_verify_skeptic": ["verdict_skeptic", "prompt_skeptic_user"],
+    "stage06_verify_support": ["verdict_support", "prompt_support_user", "prompt_support_system", "slm_raw_support"],
+    "stage07_verify_skeptic": ["verdict_skeptic", "prompt_skeptic_user", "prompt_skeptic_system", "slm_raw_skeptic"],
     "stage08_aggregate": ["draft_verdict", "quality_score"],
-    "stage09_judge": ["final_verdict", "user_result", "risk_flags", "prompt_judge_user"],
+    "stage09_judge": [
+        "final_verdict",
+        "user_result",
+        "risk_flags",
+        "prompt_judge_user",
+        "prompt_judge_system",
+        "slm_raw_judge",
+    ],
 }
 
 
@@ -269,7 +299,7 @@ async def run_pipeline_stream(req: TruthCheckRequest):
         state["querygen_prompt"] = req.querygen_prompt
 
     import logging
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger("uvicorn.error")
 
     # Custom serializer for Pydantic models
     def pydantic_encoder(obj):
@@ -303,6 +333,10 @@ async def run_pipeline_stream(req: TruthCheckRequest):
                 
                 # Yield event
                 try:
+                    logger.info(
+                        f"[{state.get('trace_id', 'unknown')}] stream stage_complete: {node_name} "
+                        f"keys={list(stage_data.keys()) if isinstance(stage_data, dict) else type(stage_data)}"
+                    )
                     payload = json.dumps({
                         "event": "stage_complete",
                         "stage": node_name,
