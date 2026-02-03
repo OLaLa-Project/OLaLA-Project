@@ -25,7 +25,7 @@ from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse, urlunparse
 from functools import lru_cache
 
-from app.stages._shared.slm_client import call_slm, SLMError
+from app.stages._shared.slm_client import call_slm1, SLMError
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,7 @@ def normalize_claim_with_llm(
 위 내용을 바탕으로 JSON 포맷의 출력을 생성하세요."""
 
     try:
-        response = call_slm(system_prompt, user_prompt)
+        response = call_slm1(system_prompt, user_prompt)
         parsed = parse_json_safe(response)
         
         if parsed:

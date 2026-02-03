@@ -69,7 +69,7 @@ def wiki_rag_stream(req: WikiSearchRequest, db: Session = Depends(get_db)) -> St
         "답변:"
     )
 
-    model_name = (req.model or "").strip() or "gemma2:9b"
+    model_name = (req.model or "").strip() or "gemma3:4b"
     ollama_payload = {
         "model": model_name,
         "prompt": prompt,
@@ -88,15 +88,19 @@ def wiki_rag_stream(req: WikiSearchRequest, db: Session = Depends(get_db)) -> St
         }
         yield json.dumps(meta).encode("utf-8") + b"\n"
 
-        with requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json=ollama_payload,
-            stream=True,
-            timeout=OLLAMA_TIMEOUT,
-        ) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if line:
-                    yield line + b"\n"
+        try:
+            with requests.post(
+                f"{OLLAMA_URL}/api/generate",
+                json=ollama_payload,
+                stream=True,
+                timeout=OLLAMA_TIMEOUT,
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if line:
+                        yield line + b"\n"
+        except requests.RequestException as err:
+            message = str(err)
+            yield json.dumps({"error": message}).encode("utf-8") + b"\n"
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")

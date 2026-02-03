@@ -144,6 +144,9 @@ def retrieve_wiki_hits(
 
     # --- 1. Candidate Selection ---
     candidates = []
+    candidates_kw = []
+    candidates_fts = []
+    candidates_vec = []
     
     if page_ids:
         # If explicit page_ids provided
@@ -165,24 +168,26 @@ def retrieve_wiki_hits(
         if search_mode in ["auto", "vector"]:
             candidates_vec = repo.vector_search_candidates(q_vec_lit, limit=page_limit)
 
-        # Union
-        candidate_map = {} # page_id -> title
-        
-        for pid, title in candidates_kw:
+    candidate_map = {}
+    
+    # 쿼리 디버깅용: 각 후보가 어떤 쿼리에 의해 검색되었는지 추적은 여기서 어려움 (Batch 검색이므로)
+    # 하지만 Stage 3가 반환하는 결과에 "query" 필드를 심어주면 됨.
+    
+    for pid, title in candidates_kw:
+        candidate_map[pid] = title
+    
+    for pid, title in candidates_fts:
+        if pid not in candidate_map:
             candidate_map[pid] = title
-        
-        for pid, title in candidates_fts:
-            if pid not in candidate_map:
-                candidate_map[pid] = title
-        
-        for pid, title in candidates_vec:
-            if pid not in candidate_map:
-                candidate_map[pid] = title
-        
-        # If specific mode yielded no results, try to respect it or fallback?
-        # Current logic is Union. If mode is "vector", kw and fts are empty, so it works.
-        
-        candidates = [{"page_id": pid, "title": title} for pid, title in candidate_map.items()]
+    
+    for pid, title in candidates_vec:
+        if pid not in candidate_map:
+            candidate_map[pid] = title
+    
+    # If specific mode yielded no results, try to respect it or fallback?
+    # Current logic is Union. If mode is "vector", kw and fts are empty, so it works.
+    
+    candidates = [{"page_id": pid, "title": title} for pid, title in candidate_map.items()]
     
     candidate_ids = [c["page_id"] for c in candidates] or (page_ids if page_ids else [])
 
@@ -195,6 +200,58 @@ def retrieve_wiki_hits(
     # Fetch more than needed to allow FTS reranking to promote relevant but slightly far vectors
     oversample_k = top_k * RERANK_OVERSAMPLE
     hits = repo.vector_search(q_vec_lit, top_k=oversample_k, page_ids=candidate_ids)
+
+    # --- 2.5 FTS Fallback (Critical if embeddings are missing) ---
+    if len(hits) < top_k:
+        # Strategy: Prioritize chunks from "Title Match" candidates first.
+        # If we have strong candidates (e.g. title "이재명 피습 사건" for query "이재명 피습"),
+        # we MUST include their content.
+        
+        # 1. Fetch chunks from top candidates
+        current_chunk_ids = {h["chunk_id"] for h in hits}
+        
+        # Take top 3 candidates (likely title matches)
+        top_candidates = candidates[:3] 
+        for cand in top_candidates:
+            if len(hits) >= oversample_k: 
+                break
+            
+            # Fetch first 2 chunks of this page (Assume intro is relevant)
+            # We need a repo method for "get first chunks of page"
+            # Since we don't have it handy, we use fetch_window for chunk_idx 0-1
+            # Note: We need to know if chunk exists. fetch_window returns strings.
+            # We need chunk metadata. 
+            pass
+            
+        # To strictly implement this, we'd need repo.get_chunks_metadata_by_page(pid).
+        # For now, let's rely on the generic FTS fallback but boost it with Candidate ID filtering?
+        # A simpler approach: repo.find_chunks_by_fts_fallback but restrict/boost based on candidate PIDs.
+        
+        # Actually, let's just stick to the generic FTS fallback for now to avoid complexity explosion 
+        # without defined repo methods.
+        # But we can query FTS fallback with LIMIT increased, then re-sort hits in Python 
+        # boosting those whose page_id is in candidates.
+        
+        needed = (top_k - len(hits)) * 2
+        q_fts_fallback = " ".join(keywords) if keywords else question
+        fts_hits = repo.find_chunks_by_fts_fallback(q_fts_fallback, limit=needed)
+        
+        # Boost FTS hits if they belong to candidate pages
+        candidate_pids = {c["page_id"] for c in candidates}
+        
+        for fh in fts_hits:
+            if fh["chunk_id"] not in current_chunk_ids:
+                # Mock score
+                score = 0.5 + (fh["lex_score"] * 0.1)
+                
+                # Boost if page is in candidates (Title match)
+                if fh["page_id"] in candidate_pids:
+                    score += 0.3
+                    fh["title"] = f"★ {fh['title']}" # Debug marker
+                
+                fh["final_score"] = score
+                hits.append(fh)
+                current_chunk_ids.add(fh["chunk_id"])
     
     # --- 3. Hybrid Reranking ---
     # Calculate FTS scores for the retrieved chunks
@@ -245,7 +302,12 @@ def retrieve_wiki_hits(
         "hits": final_hits,
         "context": "\n".join(context_parts),
         "updated_embeddings": updated_embeddings,
-        "debug": {"mode": search_mode, "keywords": keywords},
+        "debug": {
+            "mode": search_mode,
+            "keywords": keywords,
+            "query_used": q_fts_fallback if 'q_fts_fallback' in locals() else q_norm,
+            "candidates_count": len(candidates),
+        },
         "candidates": candidates,
         "prompt_context": "\n".join(context_parts),
     }

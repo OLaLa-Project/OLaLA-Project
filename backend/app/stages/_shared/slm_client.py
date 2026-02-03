@@ -41,15 +41,15 @@ class SLMConfig:
         if key == "SLM1":
             default_model = "gemma3:4b"
         elif key == "SLM2":
-            default_model = "Qwen3-4B"
+            default_model = "gemma3:4b"
         def _get(name: str, default: str) -> str:
             return os.getenv(f"{key}_{name}", default)
         return cls(
-            base_url=_get("BASE_URL", "http://localhost:8001/v1"),
+            base_url=_get("BASE_URL", "http://localhost:8080/v1"),
             api_key=_get("API_KEY", "local-slm-key"),
             model=_get("MODEL", default_model),
             timeout=int(_get("TIMEOUT_SECONDS", "60")),
-            max_tokens=int(_get("MAX_TOKENS", "768")),
+            max_tokens=int(_get("MAX_TOKENS", "1024")),
             temperature=float(_get("TEMPERATURE", "0.1")),
         )
 
@@ -131,7 +131,12 @@ class SLMClient:
                 }
                 response = _post_json(ollama_url, ollama_payload)
             response.raise_for_status()
-            data = response.json()
+            try:
+                data = response.json()
+            except Exception as e:
+                logger.error(f"SLM API 응답 파싱 실패: {e}")
+                logger.error(f"응답 본문: {response.text}")
+                raise
             if "choices" in data:
                 content = data["choices"][0]["message"]["content"]
             else:

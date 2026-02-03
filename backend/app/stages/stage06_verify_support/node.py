@@ -2,7 +2,7 @@
 Stage 6 - Supportive Verification (지지 관점 검증)
 
 주장을 지지하는 관점에서 증거를 분석합니다.
-SLM Client를 통해 검증을 수행합니다.
+SLM을 호출하여 DraftVerdict를 생성합니다.
 
 Input state keys:
     - trace_id: str
@@ -15,57 +15,81 @@ Output state keys:
 """
 
 import logging
-import json
-import re
-import pathlib
-from typing import List, Optional
+from pathlib import Path
+from functools import lru_cache
 
-from app.core.schemas import Citation
-from app.stages._shared.gateway_runtime import GatewayError
-from app.stages._shared.slm_client import get_client
+from app.stages._shared.slm_client import call_slm2, SLMError
+from app.stages._shared.guardrails import (
+    parse_json_with_retry,
+    build_draft_verdict,
+    JSONParseError,
+)
 
 logger = logging.getLogger(__name__)
 
+# 프롬프트 파일 경로
+PROMPT_FILE = Path(__file__).parent / "prompt_supportive.txt"
+
+# MVP 설정
+MAX_SNIPPET_LENGTH = 500
 DEFAULT_LANGUAGE = "ko"
 
 
-def _convert_to_citations(evidence_topk: List[dict]) -> List[Citation]:
-    """evidence_topk를 Citation 객체 리스트로 변환 (Gateway용)."""
-    citations = []
-    for ev in evidence_topk:
-        citations.append(
-            Citation(
-                source_type=ev.get("source_type", "WEB"),
-                title=ev.get("title", ""),
-                url=ev.get("url", ""),
-                quote=ev.get("snippet") or ev.get("content", ""),
-                relevance=ev.get("score", 0.0),
-                evid_id=ev.get("evid_id"),
-            )
-        )
-    return citations
+@lru_cache(maxsize=1)
+def load_system_prompt() -> str:
+    """시스템 프롬프트 로드 (캐싱)."""
+    return PROMPT_FILE.read_text(encoding="utf-8")
 
 
-def _format_citations(citations: List[Citation]) -> str:
-    """Formatter for citations to match prompt expectation."""
-    formatted = []
-    for cit in citations:
-        # [evid_id] (source_type) 제목
-        #     URL: url
-        #     내용: snippet
-        evid_id = cit.evid_id or "unknown"
-        source = cit.source_type or "WEB"
-        title = cit.title or "No Title"
-        url = cit.url or ""
-        content = cit.quote or ""
-        
-        entry = f"[{evid_id}] ({source}) {title}\n    URL: {url}\n    내용: {content}"
-        formatted.append(entry)
-    return "\n\n".join(formatted)
+def truncate_snippet(snippet: str, max_length: int = MAX_SNIPPET_LENGTH) -> str:
+    """snippet을 최대 길이로 자르기."""
+    if len(snippet) <= max_length:
+        return snippet
+    return snippet[:max_length] + "..."
+
+
+def format_evidence_for_prompt(evidence_topk: list[dict]) -> str:
+    """증거 리스트를 프롬프트용 텍스트로 포맷."""
+    if not evidence_topk:
+        return "(증거 없음)"
+
+    lines = []
+    for i, ev in enumerate(evidence_topk, 1):
+        evid_id = ev.get("evid_id", f"ev_{i}")
+        title = ev.get("title", "제목 없음")
+        url = ev.get("url", "")
+        # snippet 우선, 없으면 content 사용 (하위 호환성)
+        text_content = ev.get("snippet") or ev.get("content", "")
+        snippet = truncate_snippet(text_content)
+        source_type = ev.get("source_type", "WEB_URL")
+
+        lines.append(f"[{evid_id}] ({source_type}) {title}")
+        if url:
+            lines.append(f"    URL: {url}")
+        lines.append(f"    내용: {snippet}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_user_prompt(claim_text: str, evidence_topk: list[dict], language: str) -> str:
+    """지지 관점 분석용 user prompt 생성."""
+    evidence_text = format_evidence_for_prompt(evidence_topk)
+
+    return f"""## 검증할 주장
+{claim_text}
+
+## 수집된 증거
+{evidence_text}
+
+## 요청
+위 증거를 바탕으로 주장을 **지지하는 관점**에서 분석하고, 지정된 JSON 형식으로 결과를 출력하세요.
+언어: {language}
+"""
 
 
 def create_fallback_verdict(reason: str) -> dict:
-    """Gateway 호출 실패 시 fallback verdict 생성."""
+    """SLM 호출 실패 시 fallback verdict 생성."""
     return {
         "stance": "UNVERIFIED",
         "confidence": 0.0,
@@ -74,21 +98,6 @@ def create_fallback_verdict(reason: str) -> dict:
         "weak_points": ["SLM 호출 실패로 분석 불가"],
         "followup_queries": [],
     }
-
-
-def _clean_json_response(text: str) -> str:
-    """Remove markdown code fences if present."""
-    text = text.strip()
-    if text.startswith("```"):
-        # Remove first line (```json or ```) and last line (```)
-        lines = text.splitlines()
-        if len(lines) >= 2:
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines)
-    return text.strip()
 
 
 def run(state: dict) -> dict:
@@ -114,60 +123,38 @@ def run(state: dict) -> dict:
         state["verdict_support"] = create_fallback_verdict("증거가 제공되지 않음")
         return state
 
+    # 프롬프트 준비
+    system_prompt = load_system_prompt()
+    user_prompt = build_user_prompt(claim_text, evidence_topk, language)
+
+    # SLM 호출 함수
+    def call_fn():
+        return call_slm2(system_prompt, user_prompt)
+
+    def retry_call_fn(retry_prompt: str):
+        combined_prompt = f"{system_prompt}\n\n{retry_prompt}"
+        return call_slm2(combined_prompt, user_prompt)
+
     try:
-        # 증거 변환
-        citations = _convert_to_citations(evidence_topk)
-        citations_text = _format_citations(citations)
-        
-        # 프롬프트 템플릿 로드
-        prompt_path = pathlib.Path(__file__).parent / "prompt_supportive.txt"
-        if not prompt_path.exists():
-            raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
-            
-        system_prompt = prompt_path.read_text(encoding="utf-8")
-        
-        # User Prompt 구성
-        user_prompt = f"""
-## 검증할 주장
-{claim_text}
+        # JSON 파싱 with 재시도
+        raw_verdict = parse_json_with_retry(call_fn, retry_call_fn=retry_call_fn)
 
-## 수집된 증거
-{citations_text}
-"""
+        # 정규화 및 검증
+        verdict = build_draft_verdict(raw_verdict, evidence_topk)
 
-        # SLM 호출
-        logger.debug(f"[{trace_id}] Calling SLM2 for supportive verification")
-        client = get_client("SLM2")
-        response_text = client.chat_completion(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.1,  # 낮은 온도로 정확도 중시
-        )
-        
-        # JSON 파싱
-        cleaned_json = _clean_json_response(response_text)
-        try:
-            verdict = json.loads(cleaned_json)
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON Parse Error: {e} -> Text: {response_text}")
-            raise GatewayError(f"SLM 응답이 유효한 JSON이 아닙니다: {e}")
-
-        # 필수 필드 확인 및 보정 (간단한 validation)
-        if "stance" not in verdict:
-            verdict["stance"] = "UNVERIFIED"
-        
-        # perspective 추가
-        verdict["perspective"] = "supportive"
-            
         logger.info(
-            f"[{trace_id}] Stage6 완료: stance={verdict.get('stance')}, "
-            f"confidence={verdict.get('confidence', 0.0)}, "
-            f"citations={len(verdict.get('citations', []))}"
+            f"[{trace_id}] Stage6 완료: stance={verdict['stance']}, "
+            f"confidence={verdict['confidence']:.2f}, "
+            f"citations={len(verdict['citations'])}"
         )
 
-    except GatewayError as e:
-        logger.error(f"[{trace_id}] Gateway 호출 실패: {e}")
-        verdict = create_fallback_verdict(f"Gateway 오류: {e}")
+    except JSONParseError as e:
+        logger.error(f"[{trace_id}] JSON 파싱 최종 실패: {e}")
+        verdict = create_fallback_verdict(f"JSON 파싱 실패: {e}")
+
+    except SLMError as e:
+        logger.error(f"[{trace_id}] SLM 호출 실패: {e}")
+        verdict = create_fallback_verdict(f"SLM 호출 실패: {e}")
 
     except Exception as e:
         logger.exception(f"[{trace_id}] 예상치 못한 오류: {e}")

@@ -23,7 +23,7 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Dict, Any, List
 
-from app.stages._shared.slm_client import call_slm, SLMError
+from app.stages._shared.slm_client import call_slm1, SLMError
 from app.stages._shared.guardrails import parse_json_safe
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ Context Hints: {context_str}
 
 위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. `text` 필드는 절대 비워두면 안 됩니다."""
 
-    response = call_slm(system_prompt, user_prompt)
+    response = call_slm1(system_prompt, user_prompt)
     parsed = parse_json_safe(response)
 
     if parsed is None:
@@ -95,7 +95,7 @@ Context Hints: {context_str}
             "이전 응답이 유효한 JSON이 아닙니다. "
             "반드시 유효한 JSON만 출력하세요. 다른 설명 없이 JSON만 출력하세요."
         )
-        response = call_slm(retry_prompt, user_prompt)
+        response = call_slm1(retry_prompt, user_prompt)
         parsed = parse_json_safe(response)
 
     if parsed is None:
@@ -121,14 +121,14 @@ def generate_queries_with_prompt_override(
     template: str,
 ) -> Dict[str, Any]:
     prompt = _render_prompt_template(template, state)
-    response = call_slm("", prompt)
+    response = call_slm1("", prompt)
     parsed = parse_json_safe(response)
     if parsed is None:
         retry_prompt = (
             "이전 응답이 유효한 JSON이 아닙니다. 반드시 유효한 JSON만 출력하세요. "
             "다른 설명 없이 JSON만 출력하세요."
         )
-        response = call_slm(retry_prompt, prompt)
+        response = call_slm1(retry_prompt, prompt)
         parsed = parse_json_safe(response)
     if parsed is None:
         raise ValueError(f"JSON 파싱 최종 실패: {response[:200]}")

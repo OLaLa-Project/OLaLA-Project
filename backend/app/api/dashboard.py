@@ -528,7 +528,7 @@ async def api_generate_stream(request: Request) -> StreamingResponse:
         try:
             for line in _stream_ollama("/api/generate", req):
                 yield line
-        except requests.HTTPError as err:
+        except requests.RequestException as err:
             message = str(err)
             yield json.dumps({"error": message}).encode("utf-8") + b"\n"
 
@@ -625,7 +625,7 @@ async def api_rag_stream(request: Request) -> StreamingResponse:
         try:
             for line in _stream_ollama("/api/generate", req):
                 yield line
-        except requests.HTTPError as err:
+        except requests.RequestException as err:
             message = str(err)
             yield json.dumps({"error": message}).encode("utf-8") + b"\n"
 

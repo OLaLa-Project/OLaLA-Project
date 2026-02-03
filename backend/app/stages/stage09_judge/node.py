@@ -131,58 +131,31 @@ def _get_llm_runtime() -> GatewayRuntime:
     return _llm_runtime
 
 
-def _call_openai_compatible(
-    system_prompt: str,
-    user_prompt: str,
-    config: LLMConfig,
-    **kwargs,
-) -> str:
-    """OpenAI 호환 chat/completions 호출."""
-    url = f"{config.base_url.rstrip('/')}/chat/completions"
-
-    payload = {
-        "model": config.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "max_tokens": kwargs.get("max_tokens", config.max_tokens),
-        "temperature": kwargs.get("temperature", config.temperature),
-    }
-
-    headers = {"Content-Type": "application/json"}
-    if config.api_key and config.api_key != "ollama":
-        headers["Authorization"] = f"Bearer {config.api_key}"
-
-    try:
-        response = requests.post(
-            url,
-            json=payload,
-            headers=headers,
-            timeout=config.timeout_seconds,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
-
-    except requests.exceptions.Timeout:
-        raise GatewayTimeoutError(
-            f"LLM request timeout after {config.timeout_seconds}s"
-        )
-    except requests.exceptions.RequestException as e:
-        raise GatewayError(f"LLM request failed: {e}", cause=e)
-    except (KeyError, IndexError) as e:
-        raise GatewayError(f"Invalid LLM response format: {e}", cause=e)
-
-
 def _call_llm(
     system_prompt: str,
     user_prompt: str,
     **kwargs,
 ) -> str:
-    """LLM 호출 (OpenAI 호환 전용)."""
+    """LLM 호출 (Shared Client 사용)."""
+    # config 로드 (env에서) -> shared config로 변환이 필요하지만
+    # 단순히 shared.call_slm을 쓰거나, Judge 전용 설정을 shared client에 주입해야 함.
+    # 여기서는 간단히 Judge Config를 사용하여 SLMClient를 생성/호출합니다.
+    
     config = _get_llm_config()
-    return _call_openai_compatible(system_prompt, user_prompt, config, **kwargs)
+    from app.stages._shared.slm_client import SLMClient, SLMConfig
+    
+    # Judge Config -> SLM Config Mapping
+    slm_config = SLMConfig(
+        base_url=config.base_url,
+        api_key=config.api_key or "ollama",
+        model=config.model,
+        timeout=config.timeout_seconds,
+        max_tokens=config.max_tokens,
+        temperature=kwargs.get("temperature", config.temperature),
+    )
+    
+    client = SLMClient(slm_config)
+    return client.chat_completion(system_prompt, user_prompt, temperature=slm_config.temperature)
 
 def _build_judge_user_prompt(
     claim_text: str,

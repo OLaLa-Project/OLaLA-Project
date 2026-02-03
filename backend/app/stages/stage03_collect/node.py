@@ -9,7 +9,11 @@ from app.services.wiki_retriever import retrieve_wiki_hits
 
 # Web Search Clients
 import requests
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
+
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +44,7 @@ async def _search_wiki(query: str, search_mode: str) -> List[Dict[str, Any]]:
             
         for h in hits_data.get("hits", []):
             results.append({
-                "source_type": "KNOWLEDGE_BASE",
+                "source_type": "WIKIPEDIA",
                 "title": h["title"],
                 "url": f"wiki://page/{h['page_id']}",
                 "content": h["content"],
@@ -48,7 +52,8 @@ async def _search_wiki(query: str, search_mode: str) -> List[Dict[str, Any]]:
                     "page_id": h["page_id"],
                     "chunk_id": h["chunk_id"],
                     "dist": h.get("dist"),
-                    "lex_score": h.get("lex_score")
+                    "lex_score": h.get("lex_score"),
+                    "search_query": query,  # User request: show query used
                 }
             })
     except Exception as e:
@@ -115,7 +120,7 @@ async def _search_duckduckgo(query: str) -> List[Dict[str, Any]]:
         
         for r in ddg_results:
             results.append({
-                "source_type": "WEB",
+                "source_type": "WEB_URL",
                 "title": r.get("title", ""),
                 "url": r.get("href", ""),
                 "content": r.get("body", ""),
@@ -127,85 +132,130 @@ async def _search_duckduckgo(query: str) -> List[Dict[str, Any]]:
         
     return results
 
-def run(state: dict) -> dict:
-    """
-    Stage 3 Main:
-    1. Extract queries
-    2. Parallel Execute (Wiki + Naver + DDG)
-    3. Aggregate results
-    """
+def _extract_queries(state: dict) -> list:
     search_queries = state.get("search_queries", [])
     if not search_queries:
-        # Stage 2 output fallback
         search_queries = state.get("query_variants", [])
-
     if not search_queries:
         fallback = state.get("claim_text") or state.get("input_payload")
         if fallback:
             search_queries = [fallback]
-    
-    search_mode = state.get("search_mode", "auto")
-    logger.info(f"Stage 3 Start. Queries: {search_queries}, Mode: {search_mode}")
+    return search_queries
 
-    evidence_candidates = []
-    
-    async def _safe_task(coro, timeout=10.0, name="Task"):
-        try:
-            return await asyncio.wait_for(coro, timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.error(f"Stage 3 Task Timeout ({timeout}s): {name}")
-            return []
-        except Exception as e:
-            logger.error(f"Stage 3 Task Error ({name}): {e}")
-            return []
+async def _safe_execute(coro, timeout=10.0, name="Task"):
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.error(f"Task Timeout ({timeout}s): {name}")
+        return []
+    except Exception as e:
+        logger.error(f"Task Error ({name}): {e}")
+        return []
 
-    async def _gather_all():
+def run_wiki(state: dict) -> dict:
+    """Execute Only Wiki Search."""
+    search_queries = _extract_queries(state)
+    search_mode = state.get("search_mode", "fts")
+    
+    async def _do_wiki():
         tasks = []
-        for i, q_obj in enumerate(search_queries):
-            # Handle both dict (new) and str (legacy)
-            if isinstance(q_obj, str):
-                text = q_obj
-                qtype = "direct"
-            else:
-                text = q_obj.get("text", "")
-                qtype = q_obj.get("type", "direct")
+        # Filter for wiki queries
+        wiki_inputs = []
+        for q in search_queries:
+            text = q if isinstance(q, str) else q.get("text", "")
+            qtype = "direct" if isinstance(q, str) else q.get("type", "direct")
+            if not text: continue
             
-            if not text:
-                continue
+            if qtype in ("wiki", "verification", "direct"):
+                if "wiki" in qtype or "wiki" in str(q).lower(): 
+                   wiki_inputs.append(text)
+                elif qtype == "direct":
+                   # If generic, include in wiki
+                   wiki_inputs.append(text)
 
-            # Routing Logic with Individual Timeouts
-            if qtype == "wiki":
-                tasks.append(_safe_task(_search_wiki(text, search_mode), 60.0, f"Wiki:{text[:10]}"))
-            elif qtype == "news":
-                tasks.append(_safe_task(_search_naver(text), 10.0, f"Naver:{text[:10]}"))
-                tasks.append(_safe_task(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
-            elif qtype == "web":
-                 tasks.append(_safe_task(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
+        # Remove duplicates
+        wiki_inputs = list(set(wiki_inputs))
+        
+        if wiki_inputs:
+             # AND logic if multiple
+            if len(wiki_inputs) > 1:
+                combined = " & ".join(wiki_inputs)
+                tasks.append(_safe_execute(_search_wiki(combined, search_mode), 60.0, "Wiki-AND"))
             else:
-                tasks.append(_safe_task(_search_wiki(text, search_mode), 60.0, f"Wiki:{text[:10]}"))
-                tasks.append(_safe_task(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
-                if qtype != "verification":
-                    tasks.append(_safe_task(_search_naver(text), 10.0, f"Naver:{text[:10]}"))
-        
-        # Now gather safe tasks - none should hang indefinitely
+                tasks.append(_safe_execute(_search_wiki(wiki_inputs[0], search_mode), 60.0, "Wiki-Single"))
+
         results = await asyncio.gather(*tasks)
-        
-        flat_results = []
-        for r in results:
-             if isinstance(r, list):
-                 flat_results.extend(r)
-        
-        return flat_results
+        flat = [item for sublist in results for item in sublist]
+        return flat
 
     try:
-        evidence_candidates = asyncio.run(_gather_all())
-    except RuntimeError: 
+        candidates = asyncio.run(_do_wiki())
+    except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        evidence_candidates = loop.run_until_complete(_gather_all())
+        candidates = loop.run_until_complete(_do_wiki())
+        loop.close()
+        
+    logger.info(f"Stage 3 (Wiki) Complete. Found {len(candidates)}")
+    return {"wiki_candidates": candidates}
+
+def run_web(state: dict) -> dict:
+    """Execute Only Web/News Search."""
+    search_queries = _extract_queries(state)
+    
+    async def _do_web():
+        tasks = []
+        for q in search_queries:
+            text = q if isinstance(q, str) else q.get("text", "")
+            qtype = "direct" if isinstance(q, str) else q.get("type", "direct")
+            if not text: continue
+            
+            # Decide if this query goes to web/news
+            if qtype == "news":
+                tasks.append(_safe_execute(_search_naver(text), 10.0, f"Naver:{text[:10]}"))
+                tasks.append(_safe_execute(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
+            elif qtype == "web":
+                tasks.append(_safe_execute(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
+            elif qtype == "verification":
+                tasks.append(_safe_execute(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
+                tasks.append(_safe_execute(_search_naver(text), 10.0, f"Naver:{text[:10]}"))
+            elif qtype == "direct":
+                 # Generic fallback: do both if not explicitly wiki only
+                 tasks.append(_safe_execute(_search_duckduckgo(text), 10.0, f"DDG:{text[:10]}"))
+                 # Maybe Naver too? Let's be generous
+                 tasks.append(_safe_execute(_search_naver(text), 10.0, f"Naver:{text[:10]}"))
+
+        results = await asyncio.gather(*tasks)
+        flat = [item for sublist in results for item in sublist]
+        return flat
+
+    try:
+        candidates = asyncio.run(_do_web())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        candidates = loop.run_until_complete(_do_web())
         loop.close()
 
-    state["evidence_candidates"] = evidence_candidates
-    logger.info(f"Stage 3 Complete. Collected {len(evidence_candidates)} candidates.")
+    logger.info(f"Stage 3 (Web) Complete. Found {len(candidates)}")
+    return {"web_candidates": candidates}
+
+def run_merge(state: dict) -> dict:
+    """Merge Wiki and Web candidates."""
+    wiki = state.get("wiki_candidates", [])
+    web = state.get("web_candidates", [])
     
-    return state
+    # Deduplicate by URL or content hash if needed, but for now simple concatenation
+    # Maybe prioritize Wiki?
+    
+    all_candidates = wiki + web
+    logger.info(f"Stage 3 (Merge) Complete. Total {len(all_candidates)} candidates.")
+    return {"evidence_candidates": all_candidates}
+
+# Legacy run for compatibility if needed (wraps all)
+def run(state: dict) -> dict:
+    w = run_wiki(state)
+    n = run_web(state)
+    state.update(w)
+    state.update(n)
+    return run_merge(state)

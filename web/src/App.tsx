@@ -5,10 +5,18 @@ import PlatformPage from "./pages/platform";
 import TeamAPage from "./pages/team-a";
 import TeamBPage from "./pages/team-b";
 import LangGraphTestPage from "./pages/langgraph-test";
+import TruthCheckPage from "./pages/truth-check/TruthCheckPage";
 
 function getHashPage(): NavPage {
   const hash = window.location.hash.replace("#", "").trim();
-  if (hash === "team-a" || hash === "team-b" || hash === "langgraph-test" || hash === "platform") return hash;
+  if (
+    hash === "team-a" ||
+    hash === "team-b" ||
+    hash === "langgraph-test" ||
+    hash === "platform" ||
+    hash === "truth-check"
+  )
+    return hash as NavPage;
   return "demo";
 }
 
@@ -68,6 +76,7 @@ function App() {
             {page === "team-b" ? <TeamBPage /> : null}
             {page === "langgraph-test" ? <LangGraphTestPage /> : null}
             {page === "platform" ? <PlatformPage /> : null}
+            {page === "truth-check" ? <TruthCheckPage /> : null}
           </main>
         )}
       </div>

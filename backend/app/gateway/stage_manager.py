@@ -9,6 +9,9 @@ from typing import Dict, Any, Callable
 from app.stages.stage01_normalize.node import run as stage01_normalize
 from app.stages.stage02_querygen.node import run as stage02_querygen
 from app.stages.stage03_collect.node import run as stage03_collect
+from app.stages.stage03_collect.node import run_wiki as stage03_collect_wiki
+from app.stages.stage03_collect.node import run_web as stage03_collect_web
+from app.stages.stage03_collect.node import run_merge as stage03_collect_merge
 from app.stages.stage04_score.node import run as stage04_score
 from app.stages.stage05_topk.node import run as stage05_topk
 from app.stages.stage06_verify_support.node import run as stage06_verify_support
@@ -24,6 +27,9 @@ STAGE_REGISTRY: Dict[str, StageFn] = {
     "stage01_normalize": stage01_normalize,
     "stage02_querygen": stage02_querygen,
     "stage03_collect": stage03_collect,
+    "stage03_wiki": stage03_collect_wiki,
+    "stage03_web": stage03_collect_web,
+    "stage03_merge": stage03_collect_merge,
     "stage04_score": stage04_score,
     "stage05_topk": stage05_topk,
     "stage06_verify_support": stage06_verify_support,
