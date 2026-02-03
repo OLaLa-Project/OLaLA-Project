@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.schemas import TruthCheckRequest, TruthCheckResponse
 from app.db.session import get_db
 from app.gateway.database.repos.analysis_repo import AnalysisRepository
-from app.graph.graph import run_pipeline, run_pipeline_stream
+from app.gateway.service import run_pipeline, run_pipeline_stream
 
 router = APIRouter()
 
