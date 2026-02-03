@@ -126,6 +126,7 @@ def run(state: dict) -> dict:
     # 프롬프트 준비
     system_prompt = load_system_prompt()
     user_prompt = build_user_prompt(claim_text, evidence_topk, language)
+    state["prompt_skeptic_user"] = user_prompt
 
     # SLM 호출 함수
     def call_fn():

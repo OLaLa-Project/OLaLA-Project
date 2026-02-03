@@ -46,6 +46,35 @@ def load_system_prompt() -> str:
 # LLM 기반 쿼리 생성
 # ---------------------------------------------------------------------------
 
+def build_querygen_user_prompt(
+    claim: str,
+    context: Dict[str, Any],
+) -> str:
+    fetched_content = context.get("fetched_content", "")
+    has_article = bool(fetched_content)
+
+    if has_article:
+        truncated = fetched_content[:MAX_CONTENT_LENGTH]
+        context_str = json.dumps(
+            {k: v for k, v in context.items() if k != "fetched_content"},
+            ensure_ascii=False,
+        )
+        return f"""Input User Text: "{claim}"
+[첨부된 기사 내용 시작]
+{truncated}
+[첨부된 기사 내용 끝]
+
+Context Hints: {context_str}
+
+위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. 기사 내용이 있다면 기사의 핵심 주장을 최우선으로 반영하세요. `text` 필드는 절대 비워두면 안 됩니다."""
+
+    context_str = json.dumps(context, ensure_ascii=False, default=str)
+    return f"""Input Text: "{claim}"
+Context Hints: {context_str}
+
+위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. `text` 필드는 절대 비워두면 안 됩니다."""
+
+
 def generate_queries_with_llm(
     claim: str,
     context: Dict[str, Any],
@@ -61,29 +90,7 @@ def generate_queries_with_llm(
     """
     system_prompt = load_system_prompt()
 
-    fetched_content = context.get("fetched_content", "")
-    has_article = bool(fetched_content)
-
-    if has_article:
-        truncated = fetched_content[:MAX_CONTENT_LENGTH]
-        context_str = json.dumps(
-            {k: v for k, v in context.items() if k != "fetched_content"},
-            ensure_ascii=False,
-        )
-        user_prompt = f"""Input User Text: "{claim}"
-[첨부된 기사 내용 시작]
-{truncated}
-[첨부된 기사 내용 끝]
-
-Context Hints: {context_str}
-
-위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. 기사 내용이 있다면 기사의 핵심 주장을 최우선으로 반영하세요. `text` 필드는 절대 비워두면 안 됩니다."""
-    else:
-        context_str = json.dumps(context, ensure_ascii=False, default=str)
-        user_prompt = f"""Input Text: "{claim}"
-Context Hints: {context_str}
-
-위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. `text` 필드는 절대 비워두면 안 됩니다."""
+    user_prompt = build_querygen_user_prompt(claim, context)
 
     response = call_slm1(system_prompt, user_prompt)
     parsed = parse_json_safe(response)
@@ -288,7 +295,9 @@ def run(state: dict) -> dict:
                 state["querygen_prompt_used"] = parsed.get("_prompt_used")
             else:
                 result = postprocess_queries(parsed, claim_text)
+            state["prompt_querygen_user"] = parsed.get("_prompt_used")
         else:
+            state["prompt_querygen_user"] = build_querygen_user_prompt(claim_text, context)
             parsed = generate_queries_with_llm(claim_text, context)
             result = postprocess_queries(parsed, claim_text)
 

@@ -345,6 +345,7 @@ def run(state: dict) -> dict:
         user_prompt = _build_judge_user_prompt(
             claim_text, draft_verdict, evidence_topk, quality_score, language
         )
+        state["prompt_judge_user"] = user_prompt
 
         runtime = _get_llm_runtime()
 

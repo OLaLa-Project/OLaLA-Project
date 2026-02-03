@@ -32,3 +32,5 @@ storage/
 *.db
 .wiki/
 .vscode/
+.claude/
+.github/

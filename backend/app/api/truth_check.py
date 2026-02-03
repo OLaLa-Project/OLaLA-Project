@@ -19,7 +19,7 @@ def truth_check(req: TruthCheckRequest, db: Session = Depends(get_db)) -> TruthC
     return result
 
 
-@router.post("/truth/check/stream")
+@router.post("/api/truth/check/stream")
 async def truth_check_stream(req: TruthCheckRequest):
     """
     Streaming version of truth_check that yields stage completion events.

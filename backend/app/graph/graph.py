@@ -153,13 +153,14 @@ STAGE_SEQUENCE = [
 ]
 
 STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
-    "stage01_normalize": ["claim_text", "canonical_evidence", "entity_map"],
+    "stage01_normalize": ["claim_text", "canonical_evidence", "entity_map", "prompt_normalize_user"],
     "stage02_querygen": [
         "query_variants",
         "keyword_bundles",
         "search_constraints",
         "querygen_claims",
         "querygen_prompt_used",
+        "prompt_querygen_user",
     ],
     "adapter_queries": ["search_queries"],
     "stage03_wiki": ["wiki_candidates"],
@@ -167,10 +168,10 @@ STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "stage03_merge": ["evidence_candidates"],
     "stage04_score": ["scored_evidence"],
     "stage05_topk": ["citations", "evidence_topk", "risk_flags"],
-    "stage06_verify_support": ["verdict_support"],
-    "stage07_verify_skeptic": ["verdict_skeptic"],
+    "stage06_verify_support": ["verdict_support", "prompt_support_user"],
+    "stage07_verify_skeptic": ["verdict_skeptic", "prompt_skeptic_user"],
     "stage08_aggregate": ["draft_verdict", "quality_score"],
-    "stage09_judge": ["final_verdict", "user_result", "risk_flags"],
+    "stage09_judge": ["final_verdict", "user_result", "risk_flags", "prompt_judge_user"],
 }
 
 
@@ -402,4 +403,3 @@ def _build_response(out: Dict[str, Any], trace_id: str) -> TruthCheckResponse:
         cost_usd=cost_usd,
         created_at=created_at,
     )
-

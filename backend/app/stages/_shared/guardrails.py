@@ -39,6 +39,26 @@ def extract_json_from_text(text: str) -> str:
     return text
 
 
+def normalize_json_text(text: str) -> str:
+    """
+    JSON 파싱을 돕기 위한 최소 정규화.
+    - 코드블록/잡문 제거는 extract_json_from_text에서 처리됨
+    - 유효하지 않은 escape를 이스케이프 처리(문자 손실 방지)
+    - 제어문자 제거 (탭/개행/캐리지리턴 제외)
+    """
+    # 제어문자 제거 (JSON에 허용되지 않는 범위)
+    cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", text)
+
+    # 유효하지 않은 escape: \" \\ \/ \b \f \n \r \t \uXXXX 외는 \\로 치환
+    cleaned = re.sub(r"\\(?![\"\\/bfnrtu])", r"\\\\", cleaned)
+
+    # 끝에 남은 단일 백슬래시 처리
+    if cleaned.endswith("\\"):
+        cleaned = cleaned[:-1] + "\\\\"
+
+    return cleaned
+
+
 def parse_json_safe(text: str) -> Optional[dict]:
     """
     안전한 JSON 파싱. 실패 시 None 반환.
@@ -48,7 +68,13 @@ def parse_json_safe(text: str) -> Optional[dict]:
         return json.loads(extracted)
     except (json.JSONDecodeError, TypeError) as e:
         logger.warning(f"JSON 파싱 실패: {e}")
-        return None
+        # 1차 정규화 후 재시도
+        try:
+            normalized = normalize_json_text(extracted)
+            return json.loads(normalized)
+        except (json.JSONDecodeError, TypeError) as e2:
+            logger.warning(f"JSON 정규화 후 파싱 실패: {e2}")
+            return None
 
 
 def parse_json_with_retry(

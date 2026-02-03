@@ -21,6 +21,7 @@ type StageResult = {
     description: string;
     status: StageStatus;
     summary?: string;
+    prompt?: string;
     detail?: string;
     errorMessage?: string;
     startedAt?: string;
@@ -55,13 +56,75 @@ const buildInitialStages = (): StageResult[] =>
 const formatDetail = (data: Record<string, any>) =>
     JSON.stringify(data, null, 2);
 
-const summarizeStageData = (data?: Record<string, any>) => {
+const extractPrompt = (stageId: StageId, data?: Record<string, any>) => {
+    if (!data) return undefined;
+    if (stageId === 'stage01_normalize') return data.prompt_normalize_user;
+    if (stageId === 'stage02_querygen') return data.prompt_querygen_user;
+    if (stageId === 'stage06_verify_support') return data.prompt_support_user;
+    if (stageId === 'stage07_verify_skeptic') return data.prompt_skeptic_user;
+    if (stageId === 'stage09_judge') return data.prompt_judge_user;
+    return undefined;
+};
+
+const summarizeStageData = (stageId: StageId, data?: Record<string, any>) => {
     if (!data || Object.keys(data).length === 0) return '요약 준비 중';
-    if (typeof data.summary === 'string' && data.summary.trim()) return data.summary.trim();
-    if (typeof data.label === 'string') return `label: ${data.label}`;
-    if (typeof data.answer === 'string') return data.answer.slice(0, 120);
-    const keys = Object.keys(data).slice(0, 3).join(', ');
-    return keys ? `keys: ${keys}` : '요약 준비 중';
+
+    switch (stageId) {
+        case 'stage01_normalize': {
+            const claim = data.claim_text || data.canonical_evidence?.snippet;
+            return claim ? `정규화: ${String(claim).slice(0, 140)}` : '정규화 결과 생성';
+        }
+        case 'stage02_querygen': {
+            const variantCount = Array.isArray(data.query_variants) ? data.query_variants.length : 0;
+            const hasBundles = data.keyword_bundles ? '키워드 묶음 생성' : '키워드 묶음 없음';
+            return `쿼리 ${variantCount}개 · ${hasBundles}`;
+        }
+        case 'stage03_wiki': {
+            const count = Array.isArray(data.wiki_candidates) ? data.wiki_candidates.length : 0;
+            return `위키 후보 ${count}개 수집`;
+        }
+        case 'stage03_web': {
+            const count = Array.isArray(data.web_candidates) ? data.web_candidates.length : 0;
+            return `웹 후보 ${count}개 수집`;
+        }
+        case 'stage03_merge': {
+            const count = Array.isArray(data.evidence_candidates) ? data.evidence_candidates.length : 0;
+            return `증거 후보 ${count}개 병합`;
+        }
+        case 'stage04_score': {
+            const count = Array.isArray(data.scored_evidence) ? data.scored_evidence.length : 0;
+            return `스코어링 ${count}개`;
+        }
+        case 'stage05_topk': {
+            const topk = Array.isArray(data.evidence_topk) ? data.evidence_topk.length : 0;
+            const citations = Array.isArray(data.citations) ? data.citations.length : 0;
+            return `Top-K ${topk}개 · 인용 ${citations}개`;
+        }
+        case 'stage06_verify_support': {
+            const stance = data.verdict_support?.stance || 'UNVERIFIED';
+            const conf = data.verdict_support?.confidence ?? 0;
+            return `지지: ${stance} (${Number(conf).toFixed(2)})`;
+        }
+        case 'stage07_verify_skeptic': {
+            const stance = data.verdict_skeptic?.stance || 'UNVERIFIED';
+            const conf = data.verdict_skeptic?.confidence ?? 0;
+            return `반박: ${stance} (${Number(conf).toFixed(2)})`;
+        }
+        case 'stage08_aggregate': {
+            const stance = data.draft_verdict?.stance || 'UNVERIFIED';
+            const score = data.quality_score ?? 0;
+            return `집계: ${stance} · 품질 ${score}`;
+        }
+        case 'stage09_judge': {
+            const stance = data.final_verdict?.label || data.final_verdict?.stance || 'UNVERIFIED';
+            const conf = data.final_verdict?.confidence ?? 0;
+            return `판정: ${stance} (${Number(conf).toFixed(2)})`;
+        }
+        default: {
+            const keys = Object.keys(data).slice(0, 3).join(', ');
+            return keys ? `keys: ${keys}` : '요약 준비 중';
+        }
+    }
 };
 
 export default function TruthCheckPage() {
@@ -89,7 +152,8 @@ export default function TruthCheckPage() {
                 return {
                     ...stage,
                     status,
-                    summary: data ? summarizeStageData(data) : stage.summary,
+                    summary: data ? summarizeStageData(stageId, data) : stage.summary,
+                    prompt: data ? extractPrompt(stageId, data) : stage.prompt,
                     detail: data ? formatDetail(data) : stage.detail,
                     errorMessage: errorMessage ?? stage.errorMessage,
                     endedAt: status === 'success' || status === 'error' || status === 'aborted' ? new Date().toISOString() : stage.endedAt,
@@ -114,15 +178,17 @@ export default function TruthCheckPage() {
         bufferRef.current = '';
 
         abortControllerRef.current = new AbortController();
+        const trimmedClaim = claim.trim();
+        const inputType = /^https?:\/\//i.test(trimmedClaim) ? 'url' : 'text';
 
         try {
             const response = await fetch('/api/truth/check/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    input_type: 'claim',
-                    input_payload: claim,
-                    normalize_mode: 'soft',
+                    input_type: inputType,
+                    input_payload: trimmedClaim,
+                    normalize_mode: 'llm',
                     include_full_outputs: true,
                     // Explicitly request full sequence
                     start_stage: 'stage01_normalize',
@@ -213,100 +279,142 @@ export default function TruthCheckPage() {
     })();
 
     return (
-        <div className="p-8 max-w-5xl mx-auto text-white">
-            <div className="flex items-center justify-between gap-4 mb-6">
-                <div>
-                    <h1 className="text-2xl font-bold">Truth Check Pipeline</h1>
-                    <p className="text-sm text-slate-300">Stage별 진행 상태와 결과를 순차적으로 출력합니다.</p>
-                </div>
-                <span className={`px-3 py-1 rounded-full text-xs border ${overallBadge}`}>
-                    {overallStatus.toUpperCase()}
-                </span>
-            </div>
-
-            <div className="flex flex-col gap-3 mb-6">
-                <input
-                    type="text"
-                    value={claim}
-                    onChange={(e) => setClaim(e.target.value)}
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-4 py-2 text-white"
-                    placeholder="Enter claim to verify..."
-                />
-                <div className="flex gap-3">
-                    <button
-                        onClick={runPipeline}
-                        disabled={loading}
-                        className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-6 py-2 rounded font-bold"
-                    >
-                        {loading ? 'Running...' : 'Run'}
-                    </button>
-                    <button
-                        onClick={abortRun}
-                        disabled={!loading}
-                        className="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 px-6 py-2 rounded font-bold"
-                    >
-                        Abort
-                    </button>
-                </div>
-            </div>
-
-            {generalError ? (
-                <div className="mb-6 border border-red-500/40 bg-red-500/10 text-red-200 rounded px-4 py-3">
-                    {generalError}
-                </div>
-            ) : null}
-
-            <div className="grid gap-4">
-                {stages.map((stage) => {
-                    const statusColor =
-                        stage.status === 'success'
-                            ? 'border-emerald-500/40 bg-emerald-500/10'
-                            : stage.status === 'error'
-                            ? 'border-red-500/40 bg-red-500/10'
-                            : stage.status === 'running'
-                            ? 'border-blue-500/40 bg-blue-500/10'
-                            : stage.status === 'aborted'
-                            ? 'border-yellow-500/40 bg-yellow-500/10'
-                            : 'border-gray-800 bg-gray-900/40';
-
-                    return (
-                        <div key={stage.id} className={`rounded-lg border px-4 py-3 ${statusColor}`}>
-                            <div className="flex items-center justify-between gap-4">
-                                <div>
-                                    <div className="font-semibold">{stage.label}</div>
-                                    <div className="text-xs text-slate-300">{stage.description}</div>
-                                </div>
-                                <span className="text-xs uppercase text-slate-200">
-                                    {stage.status}
-                                </span>
-                            </div>
-                            <div className="mt-3 text-sm text-slate-100">
-                                {stage.errorMessage ? (
-                                    <span className="text-red-200">{stage.errorMessage}</span>
-                                ) : (
-                                    stage.summary || '요약 준비 중'
-                                )}
-                            </div>
-                            {stage.detail ? (
-                                <details className="mt-3 text-xs text-slate-300">
-                                    <summary className="cursor-pointer text-slate-200">상세 보기</summary>
-                                    <pre className="mt-2 whitespace-pre-wrap break-words">{stage.detail}</pre>
-                                </details>
-                            ) : null}
+        <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.18),_transparent_55%),radial-gradient(circle_at_left,_rgba(56,189,248,0.12),_transparent_45%),linear-gradient(180deg,_#0b0f1a_0%,_#121826_45%,_#0b0f1a_100%)] text-white">
+            <div className="max-w-6xl mx-auto px-6 py-10">
+                <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                        <p className="text-xs uppercase tracking-[0.2em] text-emerald-200/70">Pipeline Monitor</p>
+                        <h1 className="text-3xl font-semibold text-white">Truth Check Pipeline</h1>
+                        <p className="text-sm text-slate-300 mt-2">
+                            각 stage 완료 시점마다 결과를 순차적으로 출력합니다.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <span className={`px-3 py-1 rounded-full text-[11px] border ${overallBadge}`}>
+                            {overallStatus.toUpperCase()}
+                        </span>
+                        <div className="text-xs text-slate-400">
+                            {loading ? 'Streaming...' : 'Idle'}
                         </div>
-                    );
-                })}
-            </div>
+                    </div>
+                </div>
 
-            <div className="mt-8 border border-gray-800 rounded-lg bg-gray-900/60 p-4">
-                <h2 className="font-semibold mb-2">최종 결과</h2>
-                {finalResult ? (
-                    <pre className="text-xs whitespace-pre-wrap break-words text-slate-200">
-                        {JSON.stringify(finalResult, null, 2)}
-                    </pre>
-                ) : (
-                    <div className="text-sm text-slate-400">아직 결과가 없습니다.</div>
-                )}
+                <div className="mt-8 grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-6 shadow-[0_20px_70px_-40px_rgba(15,118,110,0.8)]">
+                        <div className="flex items-center justify-between">
+                            <h2 className="text-lg font-semibold">입력</h2>
+                            <span className="text-xs text-slate-400">Claim 또는 URL</span>
+                        </div>
+                        <input
+                            type="text"
+                            value={claim}
+                            onChange={(e) => setClaim(e.target.value)}
+                            className="mt-4 w-full rounded-xl border border-white/10 bg-[#0f1424] px-4 py-3 text-sm text-white shadow-inner focus:border-emerald-400/60 focus:outline-none focus:ring-2 focus:ring-emerald-400/20"
+                            placeholder="검증할 문장 또는 URL을 입력하세요."
+                        />
+                        <div className="mt-4 flex flex-wrap gap-3">
+                            <button
+                                onClick={runPipeline}
+                                disabled={loading}
+                                className="rounded-xl bg-emerald-500 px-5 py-2 text-sm font-semibold text-emerald-950 shadow-lg shadow-emerald-500/30 transition hover:bg-emerald-400 disabled:opacity-50"
+                            >
+                                {loading ? 'Running...' : 'Run'}
+                            </button>
+                            <button
+                                onClick={abortRun}
+                                disabled={!loading}
+                                className="rounded-xl border border-white/10 bg-white/5 px-5 py-2 text-sm font-semibold text-white/90 transition hover:bg-white/10 disabled:opacity-50"
+                            >
+                                Abort
+                            </button>
+                        </div>
+                        {generalError ? (
+                            <div className="mt-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                                {generalError}
+                            </div>
+                        ) : null}
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
+                        <h2 className="text-lg font-semibold">요약 상태</h2>
+                        <p className="mt-2 text-xs text-slate-400">Stream 상태 요약</p>
+                        <div className="mt-4 rounded-xl border border-white/10 bg-[#0f1424] p-4 text-sm text-slate-200">
+                            {overallStatus === 'running' && '파이프라인 실행 중'}
+                            {overallStatus === 'success' && '전체 완료'}
+                            {overallStatus === 'error' && '오류 발생'}
+                            {overallStatus === 'aborted' && '중단됨'}
+                            {overallStatus === 'idle' && '대기 중'}
+                        </div>
+                    </div>
+                </div>
+
+                <div className="mt-10">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-lg font-semibold">Stage Timeline</h2>
+                        <span className="text-xs text-slate-400">{stages.length} stages</span>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        {stages.map((stage) => {
+                            const statusColor =
+                                stage.status === 'success'
+                                    ? 'border-emerald-500/40 bg-emerald-500/10'
+                                    : stage.status === 'error'
+                                    ? 'border-red-500/40 bg-red-500/10'
+                                    : stage.status === 'running'
+                                    ? 'border-sky-400/40 bg-sky-400/10'
+                                    : stage.status === 'aborted'
+                                    ? 'border-amber-400/40 bg-amber-400/10'
+                                    : 'border-white/10 bg-white/5';
+
+                            return (
+                                <div key={stage.id} className={`rounded-2xl border px-4 py-4 ${statusColor}`}>
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <div className="text-sm font-semibold">{stage.label}</div>
+                                            <div className="text-xs text-slate-300">{stage.description}</div>
+                                        </div>
+                                        <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] uppercase text-slate-200">
+                                            {stage.status}
+                                        </span>
+                                    </div>
+                                    <div className="mt-3 text-sm text-slate-100">
+                                        {stage.errorMessage ? (
+                                            <span className="text-red-200">{stage.errorMessage}</span>
+                                        ) : (
+                                            stage.summary || '요약 준비 중'
+                                        )}
+                                    </div>
+                                    {stage.prompt ? (
+                                        <details className="mt-3 text-xs text-slate-300">
+                                            <summary className="cursor-pointer text-slate-200">Prompt 보기</summary>
+                                            <pre className="mt-2 whitespace-pre-wrap break-words">{stage.prompt}</pre>
+                                        </details>
+                                    ) : null}
+                                    {stage.detail ? (
+                                        <details className="mt-3 text-xs text-slate-300">
+                                            <summary className="cursor-pointer text-slate-200">JSON 보기</summary>
+                                            <pre className="mt-2 whitespace-pre-wrap break-words">{stage.detail}</pre>
+                                        </details>
+                                    ) : null}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                <div className="mt-10 rounded-2xl border border-white/10 bg-white/5 p-6">
+                    <h2 className="text-lg font-semibold">최종 결과</h2>
+                    <p className="mt-2 text-xs text-slate-400">complete 이벤트 기준</p>
+                    <div className="mt-4 rounded-xl border border-white/10 bg-[#0f1424] p-4">
+                        {finalResult ? (
+                            <pre className="text-xs whitespace-pre-wrap break-words text-slate-200">
+                                {JSON.stringify(finalResult, null, 2)}
+                            </pre>
+                        ) : (
+                            <div className="text-sm text-slate-500">아직 결과가 없습니다.</div>
+                        )}
+                    </div>
+                </div>
             </div>
         </div>
     );

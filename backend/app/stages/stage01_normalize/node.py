@@ -157,6 +157,19 @@ def extract_entities(text: str) -> List[str]:
 from app.stages._shared.guardrails import parse_json_safe
 from app.gateway.schemas.normalization import NormalizedClaim
 
+def build_normalize_user_prompt(
+    user_input: str,
+    article_title: str,
+    article_content: str,
+) -> str:
+    content_snippet = article_content[:MAX_CONTENT_LENGTH] if article_content else ""
+    return f"""[사용자 입력]: {user_input}
+[기사 제목]: {article_title}
+[기사 본문(일부)]: {content_snippet}
+
+위 내용을 바탕으로 JSON 포맷의 출력을 생성하세요."""
+
+
 def normalize_claim_with_llm(
     user_input: str,
     article_title: str,
@@ -166,13 +179,11 @@ def normalize_claim_with_llm(
     SLM을 사용해 사용자 입력 + 기사 내용으로부터 정규화된 주장 및 의도를 추출.
     """
     system_prompt = load_system_prompt()
-    content_snippet = article_content[:MAX_CONTENT_LENGTH] if article_content else ""
-
-    user_prompt = f"""[사용자 입력]: {user_input}
-[기사 제목]: {article_title}
-[기사 본문(일부)]: {content_snippet}
-
-위 내용을 바탕으로 JSON 포맷의 출력을 생성하세요."""
+    user_prompt = build_normalize_user_prompt(
+        user_input=user_input,
+        article_title=article_title,
+        article_content=article_content,
+    )
 
     try:
         response = call_slm1(system_prompt, user_prompt)
@@ -267,6 +278,12 @@ def run(state: dict) -> dict:
             )
             logger.info(f"[{trace_id}] 기본 정규화 사용")
         else:
+            user_prompt = build_normalize_user_prompt(
+                user_input=snippet,
+                article_title=fetched["title"],
+                article_content=fetched["text"],
+            )
+            state["prompt_normalize_user"] = user_prompt
             normalized_obj = normalize_claim_with_llm(
                 user_input=snippet,
                 article_title=fetched["title"],

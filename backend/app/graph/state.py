@@ -21,6 +21,8 @@ class GraphState(TypedDict, total=False):
 
     search_queries: List[str]
 
+    wiki_candidates: List[Dict[str, Any]]
+    web_candidates: List[Dict[str, Any]]
     evidence_candidates: List[Dict[str, Any]]
     scored_evidence: List[Dict[str, Any]]
     citations: List[Dict[str, Any]]
@@ -32,6 +34,11 @@ class GraphState(TypedDict, total=False):
     quality_score: int
     final_verdict: Dict[str, Any]
     user_result: Dict[str, Any]
+    prompt_normalize_user: str
+    prompt_querygen_user: str
+    prompt_support_user: str
+    prompt_skeptic_user: str
+    prompt_judge_user: str
 
     stage_logs: Annotated[List[Dict[str, Any]], operator.add]
     stage_outputs: Annotated[Dict[str, Any], operator.or_]
