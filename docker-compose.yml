@@ -27,22 +27,22 @@ services:
         max-size: "10m"
         max-file: "5"
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: olala-ollama
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      OLLAMA_HOST: 0.0.0.0:11434
-    ports:
-      - "11434:11434"
-    volumes:
-      - ./storage/ollama:/root/.ollama
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: olala-ollama
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   environment:
+  #     OLLAMA_HOST: 0.0.0.0:11434
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ./storage/ollama:/root/.ollama
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "5"
 
   backend:
     build:
@@ -57,22 +57,22 @@ services:
       DB_USER: ${POSTGRES_USER:-postgres}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-olala}
-      OLLAMA_URL: http://ollama:11434
+      OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
-      SLM_BASE_URL: ${SLM_BASE_URL:-http://ollama:11434}
-      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://ollama:11434}
+      SLM_BASE_URL: ${SLM_BASE_URL:-http://host.docker.internal:11434}
+      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://host.docker.internal:11434}
       SLM1_API_KEY: ${SLM1_API_KEY:-ollama}
       SLM1_MODEL: ${SLM1_MODEL:-gemma3:4b}
       SLM1_TIMEOUT_SECONDS: ${SLM1_TIMEOUT_SECONDS:-120}
       SLM1_MAX_TOKENS: ${SLM1_MAX_TOKENS:-768}
       SLM1_TEMPERATURE: ${SLM1_TEMPERATURE:-0.1}
-      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://ollama:11434}
+      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://host.docker.internal:11434}
       SLM2_API_KEY: ${SLM2_API_KEY:-ollama}
       SLM2_MODEL: ${SLM2_MODEL:-gemma3:4b}
       SLM2_TIMEOUT_SECONDS: ${SLM2_TIMEOUT_SECONDS:-120}
       SLM2_MAX_TOKENS: ${SLM2_MAX_TOKENS:-768}
       SLM2_TEMPERATURE: ${SLM2_TEMPERATURE:-0.1}
-      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://ollama:11434}
+      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://host.docker.internal:11434}
       JUDGE_API_KEY: ${JUDGE_API_KEY:-ollama}
       JUDGE_MODEL: ${JUDGE_MODEL:-gemma3:4b}
       # JUDGE_API_KEY: ${JUDGE_API_KEY:-}
@@ -89,24 +89,41 @@ services:
     volumes:
       - ./storage/logs/backend:/app/logs
       - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
-      ollama:
-        condition: service_started
+      # ollama:
+      #   condition: service_started
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
 
-  web:
+  web-react:
     build:
       context: ./web
-    container_name: olala-web
+    container_name: olala-web-react
     restart: unless-stopped
     ports:
       - "5175:5175"
+    depends_on:
+      - backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  web-flutter:
+    build:
+      context: ./olala_frontend
+    container_name: olala-web-flutter
+    restart: unless-stopped
+    ports:
+      - "3000:80"
     depends_on:
       - backend
     logging:

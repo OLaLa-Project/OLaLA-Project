@@ -2,6 +2,7 @@ import logging
 import asyncio
 import numpy as np
 from typing import List, Optional
+import requests
 import trafilatura
 from app.gateway.embedding.client import embed_texts
 
@@ -21,11 +22,20 @@ class WebRAGService:
             return None
             
         try:
-            # Run blocking trafilatura.fetch_url in thread
-            downloaded = await asyncio.to_thread(
-                trafilatura.fetch_url, 
-                url
-            )
+            # Use requests with User-Agent to avoid blocking
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            
+            def _fetch_sync():
+                resp = requests.get(url, headers=headers, timeout=10)
+                resp.raise_for_status()
+                # Encoding fix if needed, requests usually handles it
+                if resp.encoding is None:
+                    resp.encoding = resp.apparent_encoding
+                return resp.text
+
+            downloaded = await asyncio.to_thread(_fetch_sync)
             
             if not downloaded:
                 logger.warning(f"Failed to download/empty: {url}")

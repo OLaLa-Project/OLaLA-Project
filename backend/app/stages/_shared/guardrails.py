@@ -11,6 +11,7 @@ import json
 import re
 import logging
 from typing import Any, Callable, Optional
+import json_repair  # Robust JSON parser
 
 logger = logging.getLogger(__name__)
 
@@ -61,19 +62,26 @@ def normalize_json_text(text: str) -> str:
 
 def parse_json_safe(text: str) -> Optional[dict]:
     """
-    안전한 JSON 파싱. 실패 시 None 반환.
+    안전한 JSON 파싱. 실패 시 json_repair 사용.
     """
     try:
         extracted = extract_json_from_text(text)
+        # 1. Standard strict parse try
         return json.loads(extracted)
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"JSON 파싱 실패: {e}")
-        # 1차 정규화 후 재시도
+    except (json.JSONDecodeError, TypeError):
+        # 2. Repair try
         try:
-            normalized = normalize_json_text(extracted)
-            return json.loads(normalized)
-        except (json.JSONDecodeError, TypeError) as e2:
-            logger.warning(f"JSON 정규화 후 파싱 실패: {e2}")
+            logger.warning("Standard JSON parse failed, trying json_repair.loads...")
+            # json_repair.loads performs repair and load
+            parsed = json_repair.loads(text)
+            # Sometimes it returns list or primitives, force dict or list result usually expected
+            if isinstance(parsed, (dict, list)):
+                return parsed
+            # If it repaired into a string, it might have failed to find structure
+            logger.warning(f"json_repair returned non-container: {type(parsed)}")
+            return None
+        except Exception as e:
+            logger.warning(f"json_repair failed: {e}")
             return None
 
 
