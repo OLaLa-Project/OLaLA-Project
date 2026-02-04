@@ -17,16 +17,6 @@ class ResultScreen extends GetView<ResultController> {
         ),
       ),
       body: Obx(() {
-        // Always show logs at the top or bottom?
-        // Logic: If loading, show logs. If result exists, show result TAB or specific view.
-        // User requested: "detailed view for each stage". This implies the log list IS the main view during progress,
-        // and maybe available after result too.
-        
-        // Let's use a Split view or Tab view if result is ready. 
-        // For simplicity: If loading, show Log List.
-        // If result ready, show Result View, but maybe allow peeking logs?
-        // User said: "When stage ends, click to see details". This suggests the log list is interactive.
-        
         if (controller.isLoading.value) {
           return _buildLogListView();
         }
@@ -35,9 +25,6 @@ class ResultScreen extends GetView<ResultController> {
           return const Center(child: Text('결과를 불러올 수 없습니다.'));
         }
 
-        // Show Result View by default when done, but maybe with a "View Logs" button or tab.
-        // Or put logs below the result?
-        // Let's show Result View, and have a button to "View Process Details" which opens the log list.
         return _buildResultView(context);
       }),
     );
@@ -98,6 +85,35 @@ class ResultScreen extends GetView<ResultController> {
   }
 
   Widget _buildStageDetail(StageLog log) {
+    // Custom View for Stage 1 (Transcript)
+    if (log.stage == 'stage01_normalize' && log.data.containsKey('transcript')) {
+       final transcript = log.data['transcript'] as String?;
+       if (transcript != null && transcript.isNotEmpty) {
+         return Column(
+           crossAxisAlignment: CrossAxisAlignment.start,
+           children: [
+             const Text('영상 자막 추출 결과:', style: TextStyle(fontWeight: FontWeight.bold)),
+             const SizedBox(height: 8),
+             Container(
+               padding: const EdgeInsets.all(12),
+               decoration: BoxDecoration(
+                 color: Colors.white,
+                 border: Border.all(color: Colors.grey[300]!),
+                 borderRadius: BorderRadius.circular(4),
+               ),
+               constraints: const BoxConstraints(maxHeight: 200),
+               child: SingleChildScrollView(
+                 child: Text(transcript, style: const TextStyle(fontSize: 12)),
+               ),
+             ),
+             const SizedBox(height: 12),
+             const Text('추출된 주장:', style: TextStyle(fontWeight: FontWeight.bold)),
+             Text(log.data['claim_text'] ?? '-'),
+           ],
+         );
+       }
+    }
+
     // Custom View for Stage 3 (Evidence)
     if (log.stage.contains('stage03') || log.stage == 'stage05_topk') {
       List candidates = [];
@@ -161,7 +177,6 @@ class ResultScreen extends GetView<ResultController> {
           Expanded(
             child: TabBarView(
               children: [
-                // Tab 1: Final Result
                 SingleChildScrollView(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -190,7 +205,6 @@ class ResultScreen extends GetView<ResultController> {
                     ],
                   ),
                 ),
-                // Tab 2: Logs
                 _buildLogListView(),
               ],
             ),

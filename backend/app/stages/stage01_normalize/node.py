@@ -7,6 +7,7 @@ from urllib.parse import urlparse, urlunparse
 from functools import lru_cache
 
 from app.stages._shared.slm_client import call_slm1, SLMError
+from app.services.youtube_service import YoutubeService
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,28 @@ def run(state: dict) -> dict:
         fetched = {"text": "", "title": ""}
 
         if url_info["is_valid"]:
-            fetched = fetch_url_content(url_info["normalized_url"])
+            # 유튜브 영상 확인
+            video_id = YoutubeService.extract_video_id(url_info["normalized_url"])
+            
+            if video_id:
+                logger.info(f"[{trace_id}] YouTube Video Detected: {video_id}")
+                transcript = YoutubeService.get_transcript(video_id)
+                
+                # 메타데이터(제목) 확보를 위해 웹 페이지도 살짝 긁어봄
+                page_data = fetch_url_content(url_info["normalized_url"])
+                
+                if transcript:
+                    fetched["text"] = transcript
+                    fetched["title"] = page_data.get("title") or f"YouTube Video ({video_id})"
+                    logger.info(f"[{trace_id}] YouTube Transcript used: {len(transcript)} chars")
+                else:
+                    # 자막 실패 시 일반 웹 페이지로 취급 (설명란 등)
+                    logger.warning(f"[{trace_id}] YouTube Transcript failed, falling back to web fetch")
+                    fetched = page_data
+            else:
+                # 일반 웹 페이지
+                fetched = fetch_url_content(url_info["normalized_url"])
+
             logger.info(
                 f"[{trace_id}] URL 콘텐츠: {len(fetched['text'])} chars, "
                 f"제목: {fetched['title'][:100]}"
@@ -296,8 +318,13 @@ def run(state: dict) -> dict:
         state["original_intent"] = normalized_obj.original_intent # New State Field
         state["language"] = language or DEFAULT_LANGUAGE
 
+        # UX 개선: 유튜브 자막이 있는 경우 snippet에 자막 미리보기 표시
+        evidence_snippet = snippet
+        if "transcript" in state:
+             evidence_snippet = f"[YouTube Script] {state['transcript'][:300]}..."
+
         state["canonical_evidence"] = {
-            "snippet": snippet,
+            "snippet": evidence_snippet,
             "fetched_content": fetched["text"],
             "article_title": fetched["title"],
             "source_url": url_info["normalized_url"],
@@ -309,6 +336,14 @@ def run(state: dict) -> dict:
             "extracted": entities,
             "count": len(entities),
         }
+        
+        # 유튜브 자막인 경우 별도 필드로 저장 (UI 노출용)
+        # video_id 변수가 위에서 정의되었으므로 사용 가능 여부 확인 필요.
+        # 안전하게 URL이 유튜브이고 내용이 있으면 transcript로 간주
+        if "youtube.com" in url or "youtu.be" in url:
+             # fetched['text']가 비어있지 않다면 자막일 확률 높음
+             if fetched["text"]:
+                 state["transcript"] = fetched["text"]
 
         logger.info(
             f"[{trace_id}] Stage1 완료: claim={claim_text[:150]}..., "

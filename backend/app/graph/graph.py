@@ -174,6 +174,7 @@ STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
         "prompt_normalize_user",
         "prompt_normalize_system",
         "slm_raw_normalize",
+        "transcript",
     ],
     "stage02_querygen": [
         "query_variants",
