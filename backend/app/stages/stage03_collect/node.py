@@ -34,9 +34,9 @@ async def _search_wiki(query: str, search_mode: str) -> List[Dict[str, Any]]:
                 return retrieve_wiki_hits(
                     db=db,
                     question=query,
-                    top_k=5,         
+                    top_k=2,         
                     window=2,        
-                    page_limit=10,
+                    page_limit=2,
                     embed_missing=True,
                     search_mode=search_mode
                 )
@@ -142,6 +142,12 @@ def _extract_queries(state: dict) -> list:
         fallback = state.get("claim_text") or state.get("input_payload")
         if fallback:
             search_queries = [fallback]
+    
+    # NOTE: keyword_bundles auto-addition removed
+    # It was creating noise by searching for compound terms like "백신 관련주"
+    # that don't have dedicated wiki pages
+    # LLM should generate precise wiki queries only
+    
     return search_queries
 
 async def _safe_execute(coro, timeout=10.0, name="Task"):
@@ -154,21 +160,21 @@ async def _safe_execute(coro, timeout=10.0, name="Task"):
         logger.error(f"Task Error ({name}): {e}")
         return []
 
-def _normalize_wiki_query(text: str) -> str:
+def _normalize_wiki_query(text: str) -> List[str]:
     if not text:
-        return text
-    # Split on commas, ampersands, or 'and' variants, then join with AND for wiki search
-    parts = re.split(r"\s*(?:,|&|\band\b|\bAND\b)\s*", text)
+        return []
+    # Wiki queries are already in "Headword" format from LLM (e.g., "니파바이러스", "코로나19")
+    # Only split on explicit delimiters (comma, ampersand), NOT whitespace
+    # This prevents query explosion: "A B C" stays as one query, not three
+    parts = re.split(r"\s*[,&]\s*", text)
     terms = [p.strip() for p in parts if p.strip()]
-    if len(terms) >= 2:
-        return " & ".join(terms)
-    return text.strip()
+    return terms if terms else [text.strip()]
 
 
 async def run_wiki_async(state: dict) -> dict:
     """Execute Only Wiki Search (async)."""
     search_queries = _extract_queries(state)
-    search_mode = state.get("search_mode", "fts")
+    search_mode = state.get("search_mode", "lexical")
 
     tasks = []
     wiki_inputs = []
@@ -178,33 +184,30 @@ async def run_wiki_async(state: dict) -> dict:
         if not text:
             continue
 
-        if qtype in ("wiki", "verification", "direct"):
-            if "wiki" in qtype or "wiki" in str(q).lower():
-                wiki_inputs.append(_normalize_wiki_query(text))
-            elif qtype == "direct":
-                wiki_inputs.append(_normalize_wiki_query(text))
+        # Only process queries explicitly marked as "wiki" type
+        if qtype == "wiki":
+            wiki_inputs.extend(_normalize_wiki_query(text))
 
     wiki_inputs = list(set(wiki_inputs))
 
     if wiki_inputs:
-        if len(wiki_inputs) > 1:
-            combined = " & ".join(wiki_inputs)
-            tasks.append(_safe_execute(_search_wiki(combined, search_mode), 60.0, "Wiki-AND"))
-        else:
-            tasks.append(_safe_execute(_search_wiki(wiki_inputs[0], search_mode), 60.0, "Wiki-Single"))
+        # Run parallel searches (Union strategy)
+        # Using " & " (AND) logic forces a single page to cover ALL topics, which is too restrictive.
+        # Queries like "Bitcoin Price" and "Geopolitics" should be separate searches.
+        for q in wiki_inputs:
+             tasks.append(_safe_execute(_search_wiki(q, search_mode), 600.0, f"Wiki-Query:{q[:10]}"))
 
     results = await asyncio.gather(*tasks)
     flat = [item for sublist in results for item in sublist]
 
-    # Fallback: AND 결과가 없으면 단일 쿼리로 재시도
-    if not flat and len(wiki_inputs) > 1:
-        logger.info("Stage 3 (Wiki) AND=0, fallback to single-term searches")
-        retry_tasks = [
-            _safe_execute(_search_wiki(term, search_mode), 60.0, f"Wiki-Term:{term[:12]}")
-            for term in wiki_inputs
-        ]
-        retry_results = await asyncio.gather(*retry_tasks)
-        flat = [item for sublist in retry_results for item in sublist]
+    # Deduplicate by Page ID (since multiple queries might find same page)
+    unique_map = {}
+    for item in flat:
+        pid = item["metadata"]["page_id"]
+        if pid not in unique_map:
+            unique_map[pid] = item
+    
+    flat = list(unique_map.values())
 
     logger.info(f"Stage 3 (Wiki) Complete. Found {len(flat)}")
     return {"wiki_candidates": flat}
