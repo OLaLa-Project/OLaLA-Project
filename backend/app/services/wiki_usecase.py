@@ -1,4 +1,5 @@
 from typing import Any, Optional, List, Dict
+import os
 from sqlalchemy.orm import Session
 
 from app.gateway.database.repos.wiki_repo import WikiRepository
@@ -11,6 +12,21 @@ EMBED_MISSING_CAP = 300
 EMBED_MISSING_BATCH = 64
 SNIPPET_CHARS = 240
 RERANK_OVERSAMPLE = 20 # How many times top_k to fetch for reranking
+
+
+def _is_truthy(value: str) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _resolve_search_mode(requested: str) -> str:
+    """
+    Dynamic auto: if embeddings are not ready, downgrade auto->lexical.
+    """
+    mode = (requested or "auto").strip().lower()
+    if mode != "auto":
+        return mode
+    embeddings_ready = _is_truthy(os.getenv("WIKI_EMBEDDINGS_READY", ""))
+    return "auto" if embeddings_ready else "lexical"
 
 def extract_keywords(text: str) -> List[str]:
     """Simple keyword extraction."""
@@ -143,6 +159,7 @@ def retrieve_wiki_hits(
     5. Context Window Fetching
     """
     repo = WikiRepository(db)
+    search_mode = _resolve_search_mode(search_mode)
     q_norm = normalize_question_to_query(question)
     keywords = extract_keywords(q_norm)
     
@@ -214,9 +231,9 @@ def retrieve_wiki_hits(
 
     # --- 2. Vector Search (Oversample) ---
     hits = []
+    oversample_k = top_k * RERANK_OVERSAMPLE
     if q_vec_lit and candidate_ids:
         # Fetch more than needed to allow FTS reranking to promote relevant but slightly far vectors
-        oversample_k = top_k * RERANK_OVERSAMPLE
         hits = repo.vector_search(q_vec_lit, top_k=oversample_k, page_ids=candidate_ids)
 
     # --- 2.5 FTS Fallback (Critical if embeddings are missing) ---

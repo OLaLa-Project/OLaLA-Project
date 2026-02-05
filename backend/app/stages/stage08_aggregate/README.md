@@ -1,12 +1,17 @@
-# Stage 8 - aggregate verdict
+# Stage 8 - prepare judge packs
 
 Owner: TODO
 
 Input:
-- TODO
+- verdict_support
+- verdict_skeptic
+- evidence_topk
 
 Output:
-- TODO
+- support_pack
+- skeptic_pack
+- evidence_index
+- judge_prep_meta
 
 Notes:
-- Keep strict JSON contracts.
+- Stage9이 직접 판결하므로 병합/quality_score 계산을 하지 않음.

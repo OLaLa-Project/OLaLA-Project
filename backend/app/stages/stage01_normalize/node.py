@@ -1,5 +1,4 @@
 import re
-import html as html_lib
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -7,6 +6,7 @@ from urllib.parse import urlparse, urlunparse
 from functools import lru_cache
 
 from app.stages._shared.slm_client import call_slm1, SLMError
+from app.services.url_prefetcher import prefetch_url
 
 logger = logging.getLogger(__name__)
 
@@ -52,52 +52,6 @@ def normalize_url(url: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"URL 파싱 실패: {e}")
         return {"normalized_url": url, "is_valid": False, "domain": ""}
-
-
-def fetch_url_content(url: str) -> Dict[str, str]:
-    """
-    URL에서 기사 본문과 제목 추출 (trafilatura 사용).
-    trafilatura가 없으면 빈 결과 반환.
-    """
-    try:
-        import trafilatura
-    except ImportError:
-        logger.warning("trafilatura 미설치 - URL 콘텐츠 추출 불가")
-        return {"text": "", "title": ""}
-
-    try:
-        downloaded = trafilatura.fetch_url(url)
-        if not downloaded:
-            return {"text": "", "title": ""}
-
-        result = trafilatura.bare_extraction(
-            downloaded, include_comments=False, include_tables=False
-        )
-        if result:
-            text = getattr(result, "text", "") or (result.get("text", "") if isinstance(result, dict) else "")
-            title = getattr(result, "title", "") or (result.get("title", "") if isinstance(result, dict) else "")
-
-            # Fallback: extract title from HTML meta/title tags
-            if not title and downloaded:
-                og_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', downloaded, re.IGNORECASE)
-                if og_match:
-                    title = og_match.group(1).strip()
-                if not title:
-                    meta_match = re.search(r'<meta[^>]+name=["\']title["\'][^>]+content=["\']([^"\']+)["\']', downloaded, re.IGNORECASE)
-                    if meta_match:
-                        title = meta_match.group(1).strip()
-                if not title:
-                    title_match = re.search(r'<title[^>]*>(.*?)</title>', downloaded, re.IGNORECASE | re.DOTALL)
-                    if title_match:
-                        title = re.sub(r"\s+", " ", title_match.group(1)).strip()
-                if title:
-                    title = html_lib.unescape(title)
-
-            return {"text": text, "title": title}
-    except Exception as e:
-        logger.warning(f"URL 콘텐츠 추출 실패 ({url}): {e}")
-
-    return {"text": "", "title": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -249,13 +203,26 @@ def run(state: dict) -> dict:
         # ── 2. URL 처리 ──
         url_info = normalize_url(url)
         fetched = {"text": "", "title": ""}
+        source_type = ""
 
         if url_info["is_valid"]:
-            fetched = fetch_url_content(url_info["normalized_url"])
+            allow_youtube = input_type == "url"
+            prefetched = prefetch_url(url_info["normalized_url"], allow_youtube=allow_youtube)
+            fetched = {
+                "text": prefetched.get("text", ""),
+                "title": prefetched.get("title", ""),
+            }
+            source_type = prefetched.get("source_type", "")
             logger.info(
                 f"[{trace_id}] URL 콘텐츠: {len(fetched['text'])} chars, "
                 f"제목: {fetched['title'][:100]}"
             )
+            
+            # 2-1. Snippet 보정: 입력이 단순 URL인 경우, snippet을 기사 제목으로 대체
+            # (UI나 다운스트림에서 snippet이 URL로 보이는 문제 해결)
+            if not user_request and fetched["title"]:
+                snippet = fetched["title"]
+                logger.info(f"[{trace_id}] Snippet을 URL에서 제목으로 대체: {snippet[:50]}...")
 
         # ── 3. 주장 정규화 ──
         normalize_mode = (state.get("normalize_mode") or "llm").lower()
@@ -303,6 +270,7 @@ def run(state: dict) -> dict:
             "source_url": url_info["normalized_url"],
             "url_valid": url_info["is_valid"],
             "domain": url_info["domain"],
+            "source_type": source_type,
         }
 
         state["entity_map"] = {

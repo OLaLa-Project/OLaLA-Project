@@ -52,7 +52,7 @@ class TeamARetrieveRequest(BaseModel):
     window: int = Field(2, ge=0, le=5)
     max_chars: int = Field(2000, ge=200, le=20000)
     embed_missing: bool = True
-    search_mode: str = "fts"
+    search_mode: str = "auto"
     news_display: int = Field(5, ge=1, le=20)
 
 

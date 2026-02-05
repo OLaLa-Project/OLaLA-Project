@@ -11,3 +11,4 @@ trafilatura>=1.6.0
 duckduckgo-search>=5.0.0
 langgraph>=0.0.40
 numpy>=1.26.0
+youtube-transcript-api>=0.6.2

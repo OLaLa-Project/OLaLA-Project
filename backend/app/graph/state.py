@@ -19,7 +19,7 @@ class GraphState(TypedDict, total=False):
     keyword_bundles: Dict[str, Any]
     search_constraints: Dict[str, Any]
 
-    search_queries: List[str]
+    search_queries: List[Dict[str, Any]]
 
     wiki_candidates: List[Dict[str, Any]]
     web_candidates: List[Dict[str, Any]]
@@ -30,8 +30,12 @@ class GraphState(TypedDict, total=False):
     risk_flags: List[str]
     verdict_support: Dict[str, Any]
     verdict_skeptic: Dict[str, Any]
-    draft_verdict: Dict[str, Any]
-    quality_score: int
+    # Stage9 판결을 위해 Stage8에서 정제한 입력 패키지
+    support_pack: Dict[str, Any]
+    skeptic_pack: Dict[str, Any]
+    evidence_index: Dict[str, Any]
+    judge_prep_meta: Dict[str, Any]
+    judge_retrieval: List[Dict[str, Any]]
     final_verdict: Dict[str, Any]
     user_result: Dict[str, Any]
     prompt_normalize_user: str

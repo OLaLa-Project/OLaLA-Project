@@ -1,5 +1,7 @@
 import uuid
 import logging
+import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -8,6 +10,7 @@ from app.graph.state import GraphState
 from app.graph.stage_logger import attach_stage_log, log_stage_event, prepare_stage_output
 from app.gateway.stage_manager import run as run_stage
 from app.stages.stage03_collect.node import run_wiki_async, run_web_async
+from app.gateway.schemas.common import SearchQueryType
 
 try:
     from langgraph.graph import StateGraph, END  # type: ignore
@@ -16,16 +19,133 @@ except Exception:  # pragma: no cover - optional dependency
     END = None
 
 
+def _is_truthy(value: str) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _resolve_wiki_search_mode(state: Dict[str, Any]) -> str:
+    """Decide wiki search_mode dynamically based on embeddings readiness."""
+    explicit = (state.get("search_mode") or "").strip().lower()
+    if explicit in {"lexical", "fts", "vector"}:
+        return explicit
+
+    embeddings_ready = _is_truthy(os.getenv("WIKI_EMBEDDINGS_READY", ""))
+    if explicit == "auto":
+        return "auto" if embeddings_ready else "lexical"
+    return "auto" if embeddings_ready else "lexical"
+
+
+def _normalize_wiki_query(text: str) -> List[str]:
+    if not text:
+        return []
+    parts = re.split(r"\s*[,&]\s*", text)
+    terms: List[str] = []
+    for part in parts:
+        if not part or not part.strip():
+            continue
+        for token in part.strip().split():
+            token = token.strip()
+            if token:
+                terms.append(token)
+    return terms if terms else [text.strip()]
+
+
+def _normalize_bundle_terms(items: Any) -> List[str]:
+    if not isinstance(items, list):
+        return []
+    cleaned: List[str] = []
+    for raw in items:
+        if not isinstance(raw, str):
+            continue
+        token = raw.strip()
+        if len(token) < 2:
+            continue
+        cleaned.append(token)
+    # de-dupe, preserve order
+    seen: set[str] = set()
+    uniq: List[str] = []
+    for t in cleaned:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return uniq
+
+
 def _build_queries(state: Dict[str, Any]) -> Dict[str, Any]:
-    variants = state.get("query_variants", [])
-    search_queries: List[str] = []
+    variants = state.get("query_variants", []) or []
+    search_queries: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    used_bundle_terms = False
+
+    keyword_bundles = state.get("keyword_bundles") or {}
+    bundle_terms = _normalize_bundle_terms(keyword_bundles.get("primary"))
+    # Limit wiki terms for lexical search to reduce noise
+    bundle_terms = bundle_terms[:2]
+
     for v in variants:
-        text = (v.get("text") or "").strip()
+        if isinstance(v, dict):
+            text = (v.get("text") or "").strip()
+            qtype = (v.get("type") or "direct")
+        elif isinstance(v, str):
+            text = v.strip()
+            qtype = "direct"
+        else:
+            continue
+
         if not text:
             continue
-        search_queries.append(text)
+
+        if isinstance(qtype, SearchQueryType):
+            qtype_str = qtype.value
+        else:
+            qtype_str = str(qtype).strip().lower()
+        if qtype_str in {"wiki", "news", "web", "verification", "direct"}:
+            final_type = qtype_str
+        else:
+            final_type = SearchQueryType.DIRECT.value
+
+        if final_type == "wiki":
+            wiki_mode = _resolve_wiki_search_mode(state)
+            if bundle_terms and not used_bundle_terms:
+                for term in bundle_terms:
+                    key = (final_type, term, wiki_mode)
+                    if not term or key in seen:
+                        continue
+                    seen.add(key)
+                    search_queries.append({
+                        "type": final_type,
+                        "text": term,
+                        "search_mode": wiki_mode,
+                        "meta": {"original": text, "source": "keyword_bundles"},
+                    })
+                used_bundle_terms = True
+                continue
+
+            normalized_terms = _normalize_wiki_query(text)[:2]
+            for term in normalized_terms:
+                key = (final_type, term, wiki_mode)
+                if not term or key in seen:
+                    continue
+                seen.add(key)
+                search_queries.append({
+                    "type": final_type,
+                    "text": term,
+                    "search_mode": wiki_mode,
+                    "meta": {"original": text},
+                })
+        else:
+            key = (final_type, text, "")
+            if key in seen:
+                continue
+            seen.add(key)
+            search_queries.append({
+                "type": final_type,
+                "text": text,
+            })
+
     if not search_queries and state.get("claim_text"):
-        search_queries = [state["claim_text"]]
+        search_queries = [{"type": "direct", "text": state["claim_text"]}]
+
     return {"search_queries": search_queries}
 
 
@@ -193,11 +313,13 @@ STAGE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "stage05_topk": ["citations", "evidence_topk", "risk_flags"],
     "stage06_verify_support": ["verdict_support", "prompt_support_user", "prompt_support_system", "slm_raw_support"],
     "stage07_verify_skeptic": ["verdict_skeptic", "prompt_skeptic_user", "prompt_skeptic_system", "slm_raw_skeptic"],
-    "stage08_aggregate": ["draft_verdict", "quality_score"],
+    # Stage8은 판결을 제거하고 Stage9 입력 패키지만 만든다.
+    "stage08_aggregate": ["support_pack", "skeptic_pack", "evidence_index", "judge_prep_meta"],
     "stage09_judge": [
         "final_verdict",
         "user_result",
         "risk_flags",
+        "judge_retrieval",
         "prompt_judge_user",
         "prompt_judge_system",
         "slm_raw_judge",
@@ -240,4 +362,3 @@ def run_stage_sequence(state: Dict[str, Any], start_stage: str | None, end_stage
 
 # Logic migrated to app.gateway.service
 # run_pipeline, run_pipeline_stream, and _build_response removed from here.
-
