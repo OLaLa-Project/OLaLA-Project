@@ -1,21 +1,17 @@
-from typing import Any, Optional, List, Dict
-import os
+from typing import Any, Optional, List, Dict, cast
 from sqlalchemy.orm import Session
 
-from app.gateway.database.repos.wiki_repo import WikiRepository
-# from app.gateway.database.repos.rag_repo import RagRepository # Not used here directly
+from app.core.settings import settings
+from app.orchestrator.database.repos.wiki_repo import WikiRepository
+# from app.orchestrator.database.repos.rag_repo import RagRepository # Not used here directly
 from app.services.wiki_query_normalizer import normalize_question_to_query
-from app.gateway.embedding.client import embed_texts, vec_to_pgvector_literal
+from app.orchestrator.embedding.client import embed_texts, vec_to_pgvector_literal
 
 # Logic constants
 EMBED_MISSING_CAP = 300
 EMBED_MISSING_BATCH = 64
 SNIPPET_CHARS = 240
 RERANK_OVERSAMPLE = 20 # How many times top_k to fetch for reranking
-
-
-def _is_truthy(value: str) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _resolve_search_mode(requested: str) -> str:
@@ -25,7 +21,7 @@ def _resolve_search_mode(requested: str) -> str:
     mode = (requested or "auto").strip().lower()
     if mode != "auto":
         return mode
-    embeddings_ready = _is_truthy(os.getenv("WIKI_EMBEDDINGS_READY", ""))
+    embeddings_ready = settings.wiki_embeddings_ready
     return "auto" if embeddings_ready else "lexical"
 
 def extract_keywords(text: str) -> List[str]:
@@ -127,7 +123,7 @@ def ensure_wiki_embeddings(
         chunk_ids = [cid for cid, _ in batch]
         texts = [content for _, content in batch]
 
-        # Call Embedding Gateway
+        # Call embedding orchestrator client
         embeddings = embed_texts(texts)
         
         # Prepare updates
@@ -219,7 +215,13 @@ def retrieve_wiki_hits(
     
     candidates = [{"page_id": pid, "title": title} for pid, title in candidate_map.items()]
     
-    candidate_ids = [c["page_id"] for c in candidates]
+    candidate_ids: List[int] = []
+    for candidate in candidates:
+        page_id_raw = candidate.get("page_id")
+        try:
+            candidate_ids.append(int(cast(Any, page_id_raw)))
+        except (TypeError, ValueError):
+            continue
     
     # Ensure Embeddings (Skip for pure Lexical/FTS to avoid blocking)
     updated_embeddings = 0

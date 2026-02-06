@@ -103,7 +103,6 @@ class WikiRepository:
         for cid, vec_lit in chunk_id_to_vec_literal.items():
             self.db.execute(sql, {"cid": int(cid), "vec": vec_lit})
             updated += 1
-        self.db.commit()
         return updated
     
     
@@ -120,49 +119,60 @@ class WikiRepository:
         rows = self.db.execute(sql, {"pid": page_id, "start": start_idx, "end": end_idx}).all()
         return [str(r[0]) for r in rows]
 
+    @staticmethod
+    def _normalize_fts_query(q: str, *, max_len: int = 180) -> str:
+        # Keep it simple: strip control chars, cap length, normalize whitespace.
+        # Also replace '&' with spaces to avoid accidental operator injection.
+        q = (q or "").replace("\x00", " ").replace("&", " ").strip()
+        if len(q) > max_len:
+            q = q[:max_len]
+        q = " ".join(q.split())
+        return q
+
     def find_candidates_by_chunk_fts(self, query: str, limit: int = 50) -> List[Tuple[int, str]]:
         """
         Find candidates by Full Text Search on chunks.
         Returns unique page_ids with titles.
-        Supports AND (&) operator for multiple keywords (Korean-friendly).
+        Uses parameterized FTS query to avoid SQL injection / query breakage.
         """
-        # Handle AND combination for Korean
-        if '&' in query:
-            # Split by & and create multiple plainto_tsquery calls
-            keywords = [k.strip() for k in query.split('&') if k.strip()]
-            # Build multiple tsquery conditions combined with &&
-            tsquery_parts = [f"plainto_tsquery('simple', '{k}')" for k in keywords]
-            tsquery_expr = ' && '.join(tsquery_parts)
-        else:
-            # Single query or space-separated words (convert to AND)
-            keywords = query.split()
-            if len(keywords) > 1:
-                tsquery_parts = [f"plainto_tsquery('simple', '{k}')" for k in keywords]
-                tsquery_expr = ' && '.join(tsquery_parts)
-            else:
-                tsquery_expr = f"plainto_tsquery('simple', '{query}')"
-            
-        sql = text(f"""
+        q = self._normalize_fts_query(query)
+        if not q:
+            return []
+
+        sql = text(
+            """
             WITH q AS (
-                SELECT {tsquery_expr} AS tsq
+              SELECT websearch_to_tsquery('simple', :q) AS tsq
             ),
             matched AS (
-                SELECT
-                    c.page_id,
-                    ts_rank_cd(to_tsvector('simple', c.content), q.tsq) AS r
-                FROM public.wiki_chunks c
-                CROSS JOIN q
-                WHERE to_tsvector('simple', c.content) @@ q.tsq
-                ORDER BY r DESC
-                LIMIT :limit * 4
+              SELECT
+                c.page_id,
+                ts_rank_cd(to_tsvector('simple', c.content), q.tsq) AS r
+              FROM public.wiki_chunks c
+              CROSS JOIN q
+              WHERE to_tsvector('simple', c.content) @@ q.tsq
+              ORDER BY r DESC
+              LIMIT :limit * 4
+            ),
+            best AS (
+              SELECT page_id, MAX(r) AS score
+              FROM matched
+              GROUP BY page_id
             )
-            SELECT DISTINCT m.page_id, p.title
-            FROM matched m
-            JOIN public.wiki_pages p ON p.page_id = m.page_id
+            SELECT b.page_id, p.title
+            FROM best b
+            JOIN public.wiki_pages p ON p.page_id = b.page_id
+            ORDER BY b.score DESC, b.page_id ASC
             LIMIT :limit
-        """)
-        rows = self.db.execute(sql, {"limit": limit}).all()
-        return [(int(r[0]), str(r[1])) for r in rows]
+            """
+        )
+
+        try:
+            rows = self.db.execute(sql, {"q": q, "limit": limit}).all()
+            return [(int(r[0]), str(r[1])) for r in rows]
+        except Exception:
+            # Never 500 the whole pipeline because FTS parsing failed.
+            return []
 
     def calculate_fts_scores_for_chunks(self, chunk_ids: Sequence[int], query: str) -> Dict[int, float]:
         """

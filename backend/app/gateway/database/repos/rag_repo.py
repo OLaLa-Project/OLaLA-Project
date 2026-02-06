@@ -47,5 +47,4 @@ class RagRepository:
         for cid, vec_lit in chunk_id_to_vec_literal.items():
             self.db.execute(sql, {"cid": int(cid), "vec": vec_lit})
             updated += 1
-        self.db.commit()
         return updated

@@ -3,7 +3,7 @@ import os
 import sys
 import math
 from sqlalchemy import create_engine, text
-from app.gateway.embedding.client import embed_texts
+from app.orchestrator.embedding.client import embed_texts
 
 DATABASE_URL = "postgresql://postgres:postgres@db:5432/olala"
 

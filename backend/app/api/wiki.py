@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.wiki_schemas import WikiSearchRequest, WikiSearchResponse
-from app.gateway.database.repos.wiki_repo import WikiRepository
+from app.orchestrator.database.repos.wiki_repo import WikiRepository
 from app.db.session import get_db
 from app.services.wiki_usecase import retrieve_wiki_hits
 

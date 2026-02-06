@@ -1,6 +1,6 @@
 """Stage 5 - Top-K Selection & Formatting.
 
-Gateway 스키마를 사용하여 evid_id와 snippet을 포함한 표준 Citation 형식으로 변환합니다.
+Orchestrator 스키마를 사용하여 evid_id와 snippet을 포함한 표준 Citation 형식으로 변환합니다.
 
 Output state keys:
     - citations: list[dict] (evid_id, title, url, content, snippet, score, ...)
@@ -20,6 +20,7 @@ SNIPPET_MAX_LENGTH = 500
 
 
 import asyncio
+from app.core.async_utils import run_async_in_sync
 from app.services.web_rag_service import WebRAGService
 
 
@@ -74,7 +75,7 @@ async def run_async(state: dict) -> dict:
     # Still sort the final combined list by score for display purposes
     final_selection.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
-    # 4. Format to Citation Schema (Gateway 호환)
+    # 4. Format to Citation Schema (Orchestrator 호환)
     citations = []
     
     # Prepare enrichment tasks
@@ -150,11 +151,4 @@ async def run_async(state: dict) -> dict:
 
 def run(state: dict) -> dict:
     """Sync wrapper for Stage 5."""
-    try:
-        return asyncio.run(run_async(state))
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        out = loop.run_until_complete(run_async(state))
-        loop.close()
-        return out
+    return run_async_in_sync(run_async, state)

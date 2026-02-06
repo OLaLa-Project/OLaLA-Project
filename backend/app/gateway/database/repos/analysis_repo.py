@@ -26,5 +26,4 @@ class AnalysisRepository:
             cost_usd=analysis_data.get("cost_usd", 0.0),
         )
         self.db.add(record)
-        self.db.commit()
         return record

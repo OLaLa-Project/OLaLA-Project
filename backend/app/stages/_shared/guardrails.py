@@ -10,7 +10,7 @@ Guardrails for SLM2 stages.
 import json
 import re
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -59,19 +59,21 @@ def normalize_json_text(text: str) -> str:
     return cleaned
 
 
-def parse_json_safe(text: str) -> Optional[dict]:
+def parse_json_safe(text: str) -> Optional[dict[str, Any]]:
     """
     안전한 JSON 파싱. 실패 시 None 반환.
     """
     try:
         extracted = extract_json_from_text(text)
-        return json.loads(extracted)
+        parsed = json.loads(extracted)
+        return parsed if isinstance(parsed, dict) else None
     except (json.JSONDecodeError, TypeError) as e:
         logger.warning(f"JSON 파싱 실패: {e}")
         # 1차 정규화 후 재시도
         try:
             normalized = normalize_json_text(extracted)
-            return json.loads(normalized)
+            parsed = json.loads(normalized)
+            return parsed if isinstance(parsed, dict) else None
         except (json.JSONDecodeError, TypeError) as e2:
             logger.warning(f"JSON 정규화 후 파싱 실패: {e2}")
             return None
@@ -81,7 +83,7 @@ def parse_json_with_retry(
     call_fn: Callable[[], str],
     retry_system_prompt: str = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 유효한 JSON만 출력하세요. 다른 설명 없이 JSON만 출력하세요.",
     retry_call_fn: Optional[Callable[[str], str]] = None,
-) -> dict:
+) -> dict[str, Any]:
     """
     JSON 파싱 with 1회 재시도.
 
@@ -281,7 +283,7 @@ def build_draft_verdict(
 # Judge 전용 파서/검증 (Stage 9)
 # ---------------------------------------------------------------------------
 
-def parse_judge_json(text: str) -> dict:
+def parse_judge_json(text: str) -> dict[str, Any]:
     """
     Judge 응답 JSON 파싱 (Stage 9 전용).
 
@@ -290,7 +292,10 @@ def parse_judge_json(text: str) -> dict:
     """
     try:
         extracted = extract_json_from_text(text)
-        return json.loads(extracted)
+        parsed = json.loads(extracted)
+        if not isinstance(parsed, dict):
+            raise JSONParseError("Judge JSON 루트는 object(dict)여야 합니다.")
+        return cast(dict[str, Any], parsed)
     except (json.JSONDecodeError, TypeError) as e:
         raise JSONParseError(f"Judge JSON 파싱 실패: {e}")
 
@@ -300,7 +305,7 @@ def parse_judge_json_with_retry(
     max_retries: int = 0,
     retry_system_prompt: str = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 유효한 JSON만 출력하세요. 다른 설명 없이 JSON만 출력하세요.",
     retry_call_fn: Optional[Callable[[str], str]] = None,
-) -> dict:
+) -> dict[str, Any]:
     """
     Judge JSON 파싱 with (옵션) 재시도.
 
@@ -328,7 +333,7 @@ def parse_judge_json_with_retry(
     raise last_error
 
 
-def validate_judge_output(result: dict) -> dict:
+def validate_judge_output(result: dict[str, Any]) -> dict[str, Any]:
     """
     Judge 출력 검증 (Stage 9 전용).
 

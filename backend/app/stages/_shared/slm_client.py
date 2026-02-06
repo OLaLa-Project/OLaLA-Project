@@ -13,12 +13,12 @@ SLM Client for OpenAI-compatible API (Ollama, vLLM 등).
     SLM_TEMPERATURE: 온도 (default: 0.1)
 """
 
-import os
 import logging
 from typing import Optional
 from dataclasses import dataclass
 
 import requests
+from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -34,31 +34,47 @@ class SLMConfig:
     temperature: float
 
     @classmethod
-    def from_env(cls, prefix: str = "SLM") -> "SLMConfig":
-        """환경변수에서 설정 로드."""
+    def from_settings(cls, prefix: str = "SLM") -> "SLMConfig":
+        """중앙 Settings에서 설정 로드."""
         key = (prefix or "SLM").upper()
-        default_model = "slm"
         if key == "SLM1":
-            default_model = "gemma3:4b"
-        elif key == "SLM2":
-            default_model = "gemma3:4b"
-        def _get(name: str, default: str) -> str:
-            return os.getenv(f"{key}_{name}", default)
+            return cls(
+                base_url=settings.slm1_base_url,
+                api_key=settings.slm1_api_key,
+                model=settings.slm1_model,
+                timeout=settings.slm1_timeout_seconds,
+                max_tokens=settings.slm1_max_tokens,
+                temperature=settings.slm1_temperature,
+            )
+        if key == "SLM2":
+            return cls(
+                base_url=settings.slm2_base_url,
+                api_key=settings.slm2_api_key,
+                model=settings.slm2_model,
+                timeout=settings.slm2_timeout_seconds,
+                max_tokens=settings.slm2_max_tokens,
+                temperature=settings.slm2_temperature,
+            )
         return cls(
-            base_url=_get("BASE_URL", "http://localhost:8080/v1"),
-            api_key=_get("API_KEY", "local-slm-key"),
-            model=_get("MODEL", default_model),
-            timeout=int(_get("TIMEOUT_SECONDS", "60")),
-            max_tokens=int(_get("MAX_TOKENS", "1024")),
-            temperature=float(_get("TEMPERATURE", "0.1")),
+            base_url=settings.slm_base_url,
+            api_key=settings.slm_api_key,
+            model=settings.slm_model,
+            timeout=settings.slm_timeout_seconds,
+            max_tokens=settings.slm_max_tokens,
+            temperature=settings.slm_temperature,
         )
+
+    @classmethod
+    def from_env(cls, prefix: str = "SLM") -> "SLMConfig":
+        """호환성 유지를 위한 alias."""
+        return cls.from_settings(prefix=prefix)
 
 
 class SLMClient:
     """OpenAI-compatible API 클라이언트 (Ollama, vLLM 등)."""
 
     def __init__(self, config: Optional[SLMConfig] = None):
-        self.config = config or SLMConfig.from_env()
+        self.config = config or SLMConfig.from_settings()
 
     def chat_completion(
         self,
@@ -170,7 +186,7 @@ def get_client(prefix: str = "SLM") -> SLMClient:
     key = (prefix or "SLM").upper()
     client = _default_clients.get(key)
     if client is None:
-        client = SLMClient(SLMConfig.from_env(prefix=key))
+        client = SLMClient(SLMConfig.from_settings(prefix=key))
         _default_clients[key] = client
     return client
 

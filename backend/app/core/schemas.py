@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 
+from app.graph.state import PublicStageName
+
 
 class TruthCheckRequest(BaseModel):
     input_type: Literal["url", "text", "image"] = "text"
@@ -8,32 +10,14 @@ class TruthCheckRequest(BaseModel):
     user_request: Optional[str] = None
     as_of: Optional[str] = None
     language: Optional[str] = "ko"
-    start_stage: Optional[Literal[
-        "stage01_normalize",
-        "stage02_querygen",
-        "stage03_collect",
-        "stage04_score",
-        "stage05_topk",
-        "stage06_verify_support",
-        "stage07_verify_skeptic",
-        "stage08_aggregate",
-        "stage09_judge",
-    ]] = None
-    end_stage: Optional[Literal[
-        "stage01_normalize",
-        "stage02_querygen",
-        "stage03_collect",
-        "stage04_score",
-        "stage05_topk",
-        "stage06_verify_support",
-        "stage07_verify_skeptic",
-        "stage08_aggregate",
-        "stage09_judge",
-    ]] = None
+    start_stage: Optional[PublicStageName] = None
+    end_stage: Optional[PublicStageName] = None
     querygen_prompt: Optional[str] = None
     normalize_mode: Optional[Literal["llm", "basic"]] = None
     stage_state: Optional[dict] = None
     include_full_outputs: Optional[bool] = False
+    checkpoint_thread_id: Optional[str] = None
+    checkpoint_resume: Optional[bool] = True
 
 
 class Citation(BaseModel):
@@ -69,5 +53,8 @@ class TruthCheckResponse(BaseModel):
     latency_ms: int
     cost_usd: float
     created_at: str
+    checkpoint_thread_id: Optional[str] = None
+    checkpoint_resumed: Optional[bool] = None
+    checkpoint_expired: Optional[bool] = None
 
     model_config = {"protected_namespaces": ()}

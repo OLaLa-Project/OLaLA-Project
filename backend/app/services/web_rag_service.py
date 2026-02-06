@@ -3,7 +3,7 @@ import asyncio
 import numpy as np
 from typing import List, Optional
 import trafilatura
-from app.gateway.embedding.client import embed_texts
+from app.orchestrator.embedding.client import embed_texts
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class WebRAGService:
                 no_fallback=False
             )
             
-            if not text:
+            if not isinstance(text, str) or not text:
                 logger.warning(f"Failed to extract text: {url}")
                 return None
                 
@@ -173,4 +173,3 @@ class WebRAGService:
             logger.error(f"RAG Failed: {url} - {e}")
             
         return citation
-

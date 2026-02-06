@@ -1,8 +1,0 @@
-# Replace handles with your GitHub usernames
-
-/frontend/            @frontend-owner
-/backend/app/stages/  @team-a @team-b
-/backend/app/graph/   @platform-owner
-/shared/              @platform-owner
-/mlops/               @mlops-owner
-/docs/                @platform-owner

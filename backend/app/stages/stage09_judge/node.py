@@ -7,7 +7,6 @@ Stage6/7의 상반된 결과를 직접 비교하고,
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -16,6 +15,7 @@ from pathlib import Path
 
 import requests
 
+from app.core.settings import settings
 from app.db.session import SessionLocal
 from app.services.rag_usecase import retrieve_wiki_context
 from app.stages._shared.guardrails import (
@@ -23,14 +23,14 @@ from app.stages._shared.guardrails import (
     validate_judge_output,
     JSONParseError,
 )
-from app.stages._shared.gateway_runtime import (
-    GatewayRuntime,
+from app.stages._shared.orchestrator_runtime import (
+    OrchestratorRuntime,
     CircuitBreaker,
     CircuitBreakerConfig,
     RetryPolicy,
     RetryConfig,
-    GatewayError,
-    GatewayValidationError,
+    OrchestratorError,
+    OrchestratorValidationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,14 +52,14 @@ class LLMConfig:
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
-        """환경 변수에서 설정 로드."""
+        """중앙 Settings에서 설정 로드."""
         return cls(
-            base_url=os.getenv("JUDGE_BASE_URL", "https://api.openai.com/v1"),
-            api_key=os.getenv("JUDGE_API_KEY", ""),
-            model=os.getenv("JUDGE_MODEL", "gpt-4.1"),
-            timeout_seconds=int(os.getenv("JUDGE_TIMEOUT_SECONDS", "60")),
-            max_tokens=int(os.getenv("JUDGE_MAX_TOKENS", "1024")),
-            temperature=float(os.getenv("JUDGE_TEMPERATURE", "0.2")),
+            base_url=settings.judge_base_url,
+            api_key=settings.judge_api_key,
+            model=settings.judge_model,
+            timeout_seconds=settings.judge_timeout_seconds,
+            max_tokens=settings.judge_max_tokens,
+            temperature=settings.judge_temperature,
         )
 
 
@@ -69,7 +69,7 @@ def load_system_prompt() -> str:
     return PROMPT_FILE.read_text(encoding="utf-8")
 
 
-_llm_runtime: Optional[GatewayRuntime] = None
+_llm_runtime: Optional[OrchestratorRuntime] = None
 _llm_config: Optional[LLMConfig] = None
 
 
@@ -80,7 +80,7 @@ def _get_llm_config() -> LLMConfig:
     return _llm_config
 
 
-def _get_llm_runtime() -> GatewayRuntime:
+def _get_llm_runtime() -> OrchestratorRuntime:
     """LLM 호출용 런타임(서킷브레이커+재시도) 반환."""
     global _llm_runtime
     if _llm_runtime is None:
@@ -97,7 +97,7 @@ def _get_llm_runtime() -> GatewayRuntime:
         retry_policy = RetryPolicy(retry_config)
         retry_policy.add_retryable_exception(requests.exceptions.Timeout)
         retry_policy.add_retryable_exception(requests.exceptions.ConnectionError)
-        _llm_runtime = GatewayRuntime(
+        _llm_runtime = OrchestratorRuntime(
             name="llm",
             circuit_breaker=CircuitBreaker(name="llm", config=circuit_config),
             retry_policy=retry_policy,
@@ -605,7 +605,7 @@ def run(state: dict) -> dict:
                 )
             except JSONParseError as e:
                 state["slm_raw_judge"] = last_response
-                raise GatewayValidationError(f"JSON parsing failed: {e}", cause=e)
+                raise OrchestratorValidationError(f"JSON parsing failed: {e}", cause=e)
 
             state["slm_raw_judge"] = last_response
             parsed = validate_judge_output(parsed)
@@ -638,7 +638,7 @@ def run(state: dict) -> dict:
             f"grounding={evaluation.get('grounding_score', 'N/A')}"
         )
 
-    except GatewayError as e:
+    except OrchestratorError as e:
         logger.error(f"[{trace_id}] LLM Judge 실패: {e}")
         fallback = _apply_rule_based_judge(claim_text, support_pack, skeptic_pack, evidence_index)
         state["final_verdict"] = fallback["final_verdict"]

@@ -1,19 +1,12 @@
 import 'package:flutter/material.dart';
-import 'screens/home_screen.dart';
+import 'app/app.dart';
+import 'shared/storage/local_storage.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // ✅ 강제 초기화 (테스트용 - 한 번 실행 후 주석 처리하세요!)
+  await LocalStorage.clearAll();
+
   runApp(const OLaLAApp());
-}
-
-class OLaLAApp extends StatelessWidget {
-  const OLaLAApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'OLaLA MVP',
-      theme: ThemeData(useMaterial3: true),
-      home: const HomeScreen(),
-    );
-  }
 }

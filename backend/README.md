@@ -21,6 +21,23 @@ pip install -r backend/requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
+## 환경변수 설정
+- 템플릿: `backend/.env.example`
+- 중앙 설정 모듈: `backend/app/core/settings.py`
+- 기본적으로 `.env` 또는 `backend/.env`를 읽습니다.
+
+## 테스트 방법
+```bash
+pip install -r backend/requirements-dev.txt
+pytest backend/tests -q
+```
+
+## 타입 체크 (Step 04)
+```bash
+cd backend
+mypy --config-file mypy.ini app
+```
+
 ## Postgres 적용
 - `docker-compose.yml`에 DB 포함
 - 서버 시작 시 `analysis_results` 테이블 자동 생성

@@ -31,7 +31,7 @@ class WikiRepository:
         if not keywords:
             return []
         conditions = " OR ".join([f"title ILIKE '%' || :k{i} || '%'" for i in range(len(keywords))])
-        params = {f"k{i}": kw for i, kw in enumerate(keywords)}
+        params: dict[str, object] = {f"k{i}": kw for i, kw in enumerate(keywords)}
         params["limit"] = limit
         sql = text(f"""
             SELECT page_id, title

@@ -51,28 +51,30 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DB_HOST: db
+      # Use container_name to avoid any DNS-alias weirdness with service names (db/ollama)
+      DB_HOST: olala-db
       DB_PORT: 5432
       DB_NAME: ${POSTGRES_DB:-olala}
       DB_USER: ${POSTGRES_USER:-postgres}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-olala}
-      OLLAMA_URL: http://ollama:11434
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@olala-db:5432/${POSTGRES_DB:-olala}
+      OLLAMA_URL: http://olala-ollama:11434
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text-v2-moe:latest}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
-      SLM_BASE_URL: ${SLM_BASE_URL:-http://ollama:11434}
-      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://ollama:11434}
+      SLM_BASE_URL: ${SLM_BASE_URL:-http://olala-ollama:11434}
+      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://olala-ollama:11434}
       SLM1_API_KEY: ${SLM1_API_KEY:-ollama}
       SLM1_MODEL: ${SLM1_MODEL:-gemma3:4b}
       SLM1_TIMEOUT_SECONDS: ${SLM1_TIMEOUT_SECONDS:-120}
       SLM1_MAX_TOKENS: ${SLM1_MAX_TOKENS:-768}
       SLM1_TEMPERATURE: ${SLM1_TEMPERATURE:-0.1}
-      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://ollama:11434}
+      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://olala-ollama:11434}
       SLM2_API_KEY: ${SLM2_API_KEY:-ollama}
       SLM2_MODEL: ${SLM2_MODEL:-gemma3:4b}
       SLM2_TIMEOUT_SECONDS: ${SLM2_TIMEOUT_SECONDS:-120}
       SLM2_MAX_TOKENS: ${SLM2_MAX_TOKENS:-768}
       SLM2_TEMPERATURE: ${SLM2_TEMPERATURE:-0.1}
-      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://ollama:11434}
+      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://olala-ollama:11434}
       JUDGE_API_KEY: ${JUDGE_API_KEY:-ollama}
       JUDGE_MODEL: ${JUDGE_MODEL:-gemma3:4b}
       # JUDGE_API_KEY: ${JUDGE_API_KEY:-}
@@ -107,6 +109,23 @@ services:
     restart: unless-stopped
     ports:
       - "5175:5175"
+    depends_on:
+      - backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  web-flutter:
+    build:
+      context: ./frontend
+      args:
+        API_URL: ${FRONTEND_API_URL:-http://localhost:8080}
+    container_name: olala-web-flutter
+    restart: unless-stopped
+    ports:
+      - "3000:80"
     depends_on:
       - backend
     logging:

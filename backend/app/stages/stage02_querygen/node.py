@@ -1,11 +1,11 @@
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from functools import lru_cache
 from typing import Dict, Any, List
 
+from app.core.settings import settings
 from app.stages._shared.slm_client import call_slm1, SLMError
 from app.stages._shared.guardrails import parse_json_safe
 
@@ -17,7 +17,7 @@ PROMPT_FILE = Path(__file__).parent / "prompt_querygen.txt"
 # 설정
 MAX_CONTENT_LENGTH = 1500
 DEFAULT_LANGUAGE = "ko"
-YOUTUBE_QUERY_MAX_LEN = int(os.getenv("YOUTUBE_QUERY_MAX_LEN", "80"))
+YOUTUBE_QUERY_MAX_LEN = settings.youtube_query_max_len
 
 
 @lru_cache(maxsize=1)
@@ -153,7 +153,7 @@ def generate_queries_with_prompt_override(
     return parsed, response
 
 
-from app.gateway.schemas.common import SearchQuery, SearchQueryType
+from app.orchestrator.schemas.common import SearchQuery, SearchQueryType
 
 def _query_variants_from_team_a(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
     claims = parsed.get("claims") or parsed.get("주장들") or []

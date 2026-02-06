@@ -11,9 +11,11 @@ from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from app.core.settings import settings
+from app.core.observability import snapshot_observability
 
 try:
-    import psutil  # type: ignore
+    import psutil
 except ImportError:  # pragma: no cover - optional dependency
     psutil = None
 
@@ -22,10 +24,10 @@ from app.services.wiki_retriever import retrieve_wiki_hits
 
 router = APIRouter(prefix="/api")
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434").rstrip("/")
-OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
-NAVER_CLIENT_ID = os.environ.get("NAVER_CLIENT_ID", "").strip()
-NAVER_CLIENT_SECRET = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
+OLLAMA_URL = settings.ollama_url
+OLLAMA_TIMEOUT = settings.ollama_timeout
+NAVER_CLIENT_ID = settings.naver_client_id.strip()
+NAVER_CLIENT_SECRET = settings.naver_client_secret.strip()
 
 
 class TeamAQueryGenRequest(BaseModel):
@@ -182,7 +184,7 @@ def _naver_news_search(query: str, display: int = 5) -> Dict[str, Any]:
         "X-Naver-Client-Id": NAVER_CLIENT_ID,
         "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
     }
-    params = {"query": query, "display": display, "sort": "date"}
+    params: Dict[str, str | int] = {"query": query, "display": display, "sort": "date"}
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         if not resp.ok:
@@ -366,7 +368,7 @@ def team_a_querygen(req: TeamAQueryGenRequest) -> JSONResponse:
                 model=model,
                 prompt=prompt,
                 raw=raw,
-                response_json=parsed,
+                json=parsed,
                 error=error,
             ).model_dump()
         )
@@ -504,6 +506,7 @@ def api_metrics() -> JSONResponse:
             "api": _get_api_stats(),
             "ollama": _get_ollama_stats(),
             "gpu": _get_gpu_stats(),
+            "pipeline": snapshot_observability(),
         }
     )
 

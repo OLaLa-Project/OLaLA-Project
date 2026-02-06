@@ -6,7 +6,7 @@ from typing import List
 
 def embed_texts(texts: List[str], *, model: str | None = None, ollama_url: str | None = None, timeout: int = 60) -> List[List[float]]:
     # texts: list of strings -> list of embeddings
-    model = model or os.getenv("EMBED_MODEL", "nomic-embed-text")
+    model = model or os.getenv("EMBED_MODEL", "nomic-embed-text-v2-moe:latest")
     ollama_url = (ollama_url or os.getenv("OLLAMA_URL", "http://ollama:11434")).rstrip("/")
     url = f"{ollama_url}/api/embed"
 

@@ -1,7 +1,7 @@
 import re
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Literal
 from urllib.parse import urlparse, urlunparse
 from functools import lru_cache
 
@@ -79,7 +79,7 @@ def extract_entities(text: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 from app.stages._shared.guardrails import parse_json_safe
-from app.gateway.schemas.normalization import NormalizedClaim
+from app.orchestrator.schemas.normalization import NormalizedClaim
 
 def split_sentences(text: str) -> List[str]:
     if not text:
@@ -136,9 +136,10 @@ def normalize_claim_with_llm(
             except Exception as e:
                 logger.warning(f"NormalizedClaim 파싱 실패: {e}, raw={parsed}")
                 # Fallback to loose dictionary if schema mismatch, or fix fields
-                intent = parsed.get("original_intent")
-                if intent not in {"verification", "exploration"}:
-                    intent = "verification"
+                intent_raw = parsed.get("original_intent")
+                intent: Literal["verification", "exploration"] = (
+                    "exploration" if intent_raw == "exploration" else "verification"
+                )
                 return NormalizedClaim(
                     claim_text=parsed.get("claim_text") or article_title or user_input,
                     original_intent=intent,

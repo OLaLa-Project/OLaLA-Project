@@ -1,6 +1,5 @@
 # backend/app/api/rag.py
 import json
-import os
 from typing import Any, Generator
 import requests
 from fastapi import APIRouter, Depends
@@ -10,10 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.wiki_schemas import WikiSearchRequest
+from app.core.settings import settings
 from app.services.rag_usecase import retrieve_wiki_context
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434").rstrip("/")
-OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "60"))
+OLLAMA_URL = settings.ollama_url
+OLLAMA_TIMEOUT = settings.ollama_timeout
 
 router = APIRouter(prefix="/api")
 

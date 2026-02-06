@@ -9,7 +9,8 @@ class WikiSearchRequest(BaseModel):
     window: int = Field(2, ge=0, le=10)
     max_chars: int = Field(4200, ge=500, le=20000)
     page_limit: int = Field(8, ge=1, le=50)
-    embed_missing: bool = True
+    # Online path must be read-only. Embeddings should be filled by batch jobs, not user requests.
+    embed_missing: bool = False
     page_ids: Optional[List[int]] = None
     search_mode: str = Field("auto")
 

@@ -1,4 +1,3 @@
-import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
@@ -7,19 +6,12 @@ from app.api.truth_check import router as truth_router
 from app.api.wiki import router as wiki_router
 from app.db.init_db import init_db
 from app.api.rag import router as rag_router
+from app.core.settings import settings
 
 app = FastAPI(title="OLaLA MVP")
-cors_origins_env = os.getenv("CORS_ORIGINS", "")
-cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
-if not cors_origins:
-    cors_origins = [
-        "http://localhost:5175",
-        "http://127.0.0.1:5175",
-        "http://192.168.0.4:5175",
-    ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

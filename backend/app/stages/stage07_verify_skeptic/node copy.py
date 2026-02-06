@@ -21,7 +21,7 @@ import pathlib
 from typing import List, Optional
 
 from app.core.schemas import Citation
-from app.stages._shared.gateway_runtime import GatewayError
+from app.stages._shared.orchestrator_runtime import OrchestratorError
 from app.stages._shared.slm_client import get_client
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ DEFAULT_LANGUAGE = "ko"
 
 
 def _convert_to_citations(evidence_topk: List[dict]) -> List[Citation]:
-    """evidence_topk를 Citation 객체 리스트로 변환 (Gateway용)."""
+    """evidence_topk를 Citation 객체 리스트로 변환 (Orchestrator용)."""
     citations = []
     for ev in evidence_topk:
         citations.append(
@@ -65,7 +65,7 @@ def _format_citations(citations: List[Citation]) -> str:
 
 
 def create_fallback_verdict(reason: str) -> dict:
-    """Gateway 호출 실패 시 fallback verdict 생성."""
+    """Orchestrator runtime 호출 실패 시 fallback verdict 생성."""
     return {
         "stance": "UNVERIFIED",
         "confidence": 0.0,
@@ -151,7 +151,7 @@ def run(state: dict) -> dict:
             verdict = json.loads(cleaned_json)
         except json.JSONDecodeError as e:
             logger.error(f"JSON Parse Error: {e} -> Text: {response_text}")
-            raise GatewayError(f"SLM 응답이 유효한 JSON이 아닙니다: {e}")
+            raise OrchestratorError(f"SLM 응답이 유효한 JSON이 아닙니다: {e}")
 
         # 필수 필드 확인 및 보정
         if "stance" not in verdict:
@@ -166,9 +166,9 @@ def run(state: dict) -> dict:
             f"citations={len(verdict.get('citations', []))}"
         )
 
-    except GatewayError as e:
-        logger.error(f"[{trace_id}] Gateway 호출 실패: {e}")
-        verdict = create_fallback_verdict(f"Gateway 오류: {e}")
+    except OrchestratorError as e:
+        logger.error(f"[{trace_id}] Orchestrator runtime 호출 실패: {e}")
+        verdict = create_fallback_verdict(f"Orchestrator 오류: {e}")
 
     except Exception as e:
         logger.exception(f"[{trace_id}] 예상치 못한 오류: {e}")

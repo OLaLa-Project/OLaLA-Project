@@ -4,7 +4,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-_LOG_DIR = os.getenv("LOG_DIR", "/app/logs")
+from app.core.observability import record_stage_result
+from app.core.settings import settings
+
+_LOG_DIR = settings.log_dir
 _PIPELINE_DIR = os.path.join(_LOG_DIR, "pipeline")
 
 
@@ -125,6 +128,12 @@ def attach_stage_log(
         duration_ms = int((time.time() - started_at) * 1000)
     entry = _make_entry(state, stage, "end", output=output, duration_ms=duration_ms)
     _write_log(entry)
+    record_stage_result(
+        stage,
+        trace_id=str(state.get("trace_id", "unknown")),
+        duration_ms=duration_ms,
+        ok=True,
+    )
 
     out = dict(output)
     out["stage_logs"] = [entry]
