@@ -29,7 +29,9 @@ from app.stages._shared.guardrails import parse_json_safe
 logger = logging.getLogger(__name__)
 
 # 프롬프트 파일 경로
+# 프롬프트 파일 경로
 PROMPT_FILE = Path(__file__).parent / "prompt_querygen.txt"
+PROMPT_FILE_YOUTUBE = Path(__file__).parent / "prompt_querygen_youtube.txt"
 
 # 설정
 MAX_CONTENT_LENGTH = 1500
@@ -41,6 +43,11 @@ def load_system_prompt() -> str:
     """시스템 프롬프트 로드 (캐싱)."""
     return PROMPT_FILE.read_text(encoding="utf-8")
 
+@lru_cache(maxsize=1)
+def load_youtube_prompt() -> str:
+    """유튜브 전용 시스템 프롬프트 로드 (캐싱)."""
+    return PROMPT_FILE_YOUTUBE.read_text(encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # LLM 기반 쿼리 생성
@@ -50,8 +57,20 @@ def build_querygen_user_prompt(
     claim: str,
     context: Dict[str, Any],
     claims: list[dict] | None = None,
+    is_youtube: bool = False,
 ) -> str:
-    fetched_content = context.get("fetched_content", "")
+    fetched_content = context.get("fetched_content", "") or context.get("transcript", "")
+    
+    if is_youtube and fetched_content:
+        # 유튜브 전용 프롬프트 포맷
+        return f"""[YouTube Script]
+{fetched_content}
+
+[핵심 주장 (Claim)]
+{claim}
+
+위 내용을 바탕으로 JSON 포맷의 출력을 생성하세요."""
+
     has_article = bool(fetched_content)
 
     claims_block = ""
@@ -65,16 +84,21 @@ def build_querygen_user_prompt(
             claims_block = "\n[핵심 주장 후보]\n" + "\n".join(lines)
 
     if has_article:
+        # fetched_content를 제외한 나머지 메타데이터만 JSON으로 변환
         context_str = json.dumps(
             {k: v for k, v in context.items() if k != "fetched_content"},
             ensure_ascii=False,
         )
+        # 중요: 기사 본문(fetched_content)을 프롬프트에 포함시킴
         return f"""Input User Text: "{claim}"
 {claims_block}
 
 Context Hints: {context_str}
 
-위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. 기사 내용이 있다면 기사의 핵심 주장을 최우선으로 반영하세요. `text` 필드는 절대 비워두면 안 됩니다."""
+[Provided Content]
+{fetched_content}
+
+위 정보를 바탕으로 JSON 포맷의 출력을 생성하세요. 기사 내용(Provided Content)이 있다면 그 내용을 최우선으로 반영하여 검색어를 생성하세요. `text` 필드는 절대 비워두면 안 됩니다."""
 
     context_str = json.dumps(context, ensure_ascii=False, default=str)
     return f"""Input Text: "{claim}"
@@ -98,9 +122,15 @@ def generate_queries_with_llm(
     Raises:
         SLMError, ValueError: LLM 호출 또는 파싱 실패 시
     """
-    system_prompt = load_system_prompt()
+    # 유튜브 여부 확인 (Stage 1에서 transcript가 있으면 유튜브로 간주)
+    is_youtube = bool(context.get("transcript"))
 
-    user_prompt = build_querygen_user_prompt(claim, context, claims)
+    if is_youtube:
+        system_prompt = load_youtube_prompt()
+    else:
+        system_prompt = load_system_prompt()
+
+    user_prompt = build_querygen_user_prompt(claim, context, claims, is_youtube=is_youtube)
 
     response = call_slm1(system_prompt, user_prompt)
     parsed = parse_json_safe(response)
@@ -269,6 +299,7 @@ def generate_rule_based_fallback(claim: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def run(state: dict) -> dict:
+    print("DEBUG: Stage 2 node.run called!")
     """
     Stage 2 실행: 검색 쿼리 생성.
 
@@ -278,6 +309,34 @@ def run(state: dict) -> dict:
     trace_id = state.get("trace_id", "unknown")
     claim_text = state.get("claim_text", "")
     context = state.get("canonical_evidence", {})
+    logger.info(f"[{trace_id}] Stage2 Debug: keys in state: {list(state.keys())}")
+    logger.info(f"[{trace_id}] Stage2 Debug: transcript in state? {'transcript' in state}")
+    print(f"DEBUG: Stage 2 context keys: {list(context.keys())}")
+    if 'transcript' in state:
+         logger.info(f"[{trace_id}] Stage2 Debug: transcript len: {len(state['transcript'])}")
+
+    # Stage 1에서 transcript를 root state에 저장하므로, Stage 2 context에 주입
+    if state.get("transcript"):
+        context["transcript"] = state.get("transcript")
+        
+    # Robust Detection for YouTube
+    domain = context.get("domain", "") or ""
+    source_url = context.get("source_url", "") or ""
+    is_youtube_url = "youtube.com" in domain or "youtu.be" in domain or "youtube.com" in source_url or "youtu.be" in source_url
+    
+    # Check content
+    has_transcript = bool(context.get("transcript"))
+    has_content = bool(context.get("transcript") or context.get("fetched_content"))
+    
+    # Determine is_youtube: URL match + Content available
+    is_youtube = (is_youtube_url and has_content) or has_transcript
+    
+    # Force context['transcript'] if it's youtube but missing key
+    if is_youtube and not context.get("transcript") and context.get("fetched_content"):
+        context["transcript"] = context.get("fetched_content")
+
+    print(f"DEBUG: Stage 2 is_youtube: {is_youtube} (URL: {is_youtube_url}, HasTranscript: {has_transcript})")
+    logger.info(f"[{trace_id}] Stage2 Debug: is_youtube determined as: {is_youtube}")
 
     logger.info(f"[{trace_id}] Stage2 시작: claim={claim_text[:50]}...")
 
@@ -314,6 +373,7 @@ def run(state: dict) -> dict:
                 claim_text,
                 context,
                 state.get("normalize_claims"),
+                is_youtube=is_youtube,
             )
             state["prompt_querygen_system"] = system_prompt
             parsed, slm_raw = generate_queries_with_llm(
@@ -338,9 +398,11 @@ def run(state: dict) -> dict:
         result = generate_rule_based_fallback(claim_text)
 
     # State 업데이트
-    state["query_variants"] = result["query_variants"]
-    state["keyword_bundles"] = result["keyword_bundles"]
-    state["search_constraints"] = result["search_constraints"]
+    state["query_variants"] = result.get("query_variants") or []
+    state["keyword_bundles"] = result.get("keyword_bundles") or {"primary": [], "secondary": []}
+    state["search_constraints"] = result.get("search_constraints") or {}
+    
+    print(f"DEBUG: Stage 2 returning state. query_variants len: {len(state['query_variants'])}")
 
     if result.get("query_variants"):
         logger.info(f"[{trace_id}] Stage2 완료: top_query={result['query_variants'][0]['text']}")

@@ -1,109 +1,342 @@
-import 'package:get/get.dart';
 import 'package:flutter/material.dart';
-import '../../../../data/provider/api_client.dart';
-import '../../../../shared/services/truth_check_service.dart';
+import 'package:get/get.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:screenshot/screenshot.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+import '../models/evidence_card.dart';
+import '../repository/api_verify_repository.dart';
+import '../../shell/shell_controller.dart';
+import '../../settings/settings_screen.dart';
+import '../../history/history_screen.dart';
+import '../../bookmark/bookmark_controller.dart';
+import '../../bookmark/models/bookmark_item.dart';
+import '../../bookmark/bookmark_screen.dart';
+import 'widgets/shareable_result_card.dart';
 
-class StageLog {
-  final String stage;
-  final String label;
-  final Map<String, dynamic> data;
-  final DateTime timestamp;
-  
-  StageLog({
-    required this.stage, 
-    required this.label, 
-    this.data = const {},
-    DateTime? timestamp,
-  }) : timestamp = timestamp ?? DateTime.now();
-}
+enum VerdictType { trueClaim, falseClaim, mixed, unverified }
+
+enum ResultState { loading, success, empty, error }
 
 class ResultController extends GetxController {
-  final TruthCheckService _truthCheckService = TruthCheckService();
+  static const Size _shareImageSize = Size(800, 1400);
+  static const Duration _shareRenderDelay = Duration(seconds: 1);
 
-  // State
-  RxList<StageLog> logs = <StageLog>[].obs;
-  Rx<TruthCheckResponse?> finalResult = Rx<TruthCheckResponse?>(null);
-  RxBool isLoading = true.obs;
-  RxString currentStage = ''.obs;
+  // ─────────────────────────────────────────
+  // Result State
+  // ─────────────────────────────────────────
+  final resultState = ResultState.error.obs;
+
+  // ─────────────────────────────────────────
+  // Loading UI
+  // ─────────────────────────────────────────
+  final loadingHeadline = '검증 중이에요'.obs;
+  final loadingSubtext = '근거를 수집하고 있어요.'.obs;
+  final loadingStep = 0.obs;
+  
+  /// Current pipeline stage (for real-time progress)
+  final currentStage = 'initializing'.obs;
+  final completedStages = <String>[].obs;
+
+  // ─────────────────────────────────────────
+  // Success UI (브랜드 결과 화면)
+  // ─────────────────────────────────────────
+  final verdictType = VerdictType.unverified.obs;
+
+  /// 0.0 ~ 1.0 (confidence bar)
+  final confidence = 0.72.obs;
+
+  /// 결과 헤드라인(예: "대체로 사실이에요")
+  final successHeadline = '검증 결과'.obs;
+
+  /// 결과 요약/이유
+  final successReason = '수집된 근거를 바탕으로 판단했어요.\n아래 근거 카드에서 출처를 직접 확인해 주세요.'.obs;
+
+  /// 사용자의 원본 질문
+  final userQuery = ''.obs;
+
+  /// 근거 카드 리스트
+  final RxList<EvidenceCard> evidenceCards = <EvidenceCard>[].obs;
+
+  // ─────────────────────────────────────────
+  // UX Actions (프로젝트 라우팅에 맞춰 구현)
+  // ─────────────────────────────────────────
+  bool get canCancelVerification => true;
+  void cancelVerification() => Get.back();
+
+  void openSettings() {
+    Get.to(() => const SettingsScreen());
+  }
+
+  void goHistory() {
+    // ✅ 실무 패턴: 결과 화면 유지하고 히스토리 화면을 push
+    // 뒤로가기 시 결과 화면으로 돌아옴
+    Get.to(() => const HistoryScreen());
+  }
+
+  void goHome() {
+    // 홈으로 이동: 결과 화면 닫고 홈 탭으로
+    Get.back();
+    if (Get.isRegistered<ShellController>()) {
+      Get.find<ShellController>().setTab(1);
+    }
+  }
+
+  void goBookmark() {
+    // ✅ 실무 패턴: 결과 화면 유지하고 북마크 화면을 push
+    // 뒤로가기 시 결과 화면으로 돌아옴
+    Get.to(() => const BookmarkScreen());
+  }
+
+  void addBookmark() {
+    final bookmarkController = Get.isRegistered<BookmarkController>()
+        ? Get.find<BookmarkController>()
+        : Get.put(BookmarkController());
+
+    final headline = successHeadline.value.isNotEmpty
+        ? successHeadline.value
+        : _defaultHeadline(verdictType.value);
+
+    final item = BookmarkItem(
+      id: 'r_${DateTime.now().millisecondsSinceEpoch}',
+      inputSummary: headline,
+      resultLabel: _bookmarkLabel(verdictType.value),
+      timestamp: DateTime.now(),
+    );
+
+    bookmarkController.items.insert(0, item);
+
+    Get.showSnackbar(
+      GetSnackBar(
+        message: '북마크에 추가했어요',
+        duration: const Duration(seconds: 2),
+        backgroundColor: Colors.black.withOpacity( 0.8),
+      ),
+    );
+  }
+
+  /// ✅ 이미지 생성 + 공유 (빅테크 방식)
+  // ✅ 이미지 생성 + 공유 (빅테크 방식)
+  Future<void> shareResult() async {
+    try {
+      debugPrint('📝 공유 프로세스 시작...');
+
+      // 1) 이미지 생성
+      debugPrint('🎨 이미지 생성 시작...');
+      final imageFile = await _generateShareImage();
+      debugPrint('✅ 이미지 생성 완료: ${imageFile.path}');
+
+      // 2) 공유 실행
+      debugPrint('📤 공유 시트 열기...');
+
+      // ✅ iPad/iOS용 공유 위치 설정 (공유 버튼 위치: 우하단)
+      final box = Get.context?.findRenderObject() as RenderBox?;
+      final screenSize = box?.size ?? const Size(390, 844);
+
+      final shareButtonRect = Rect.fromLTWH(
+        screenSize.width - 74,
+        screenSize.height - 142,
+        56,
+        56,
+      );
+
+      final result = await Share.shareXFiles(
+        [XFile(imageFile.path)],
+        subject: 'OLaLA 팩트체크 결과',
+        sharePositionOrigin: shareButtonRect,
+      );
+
+      // 3) 공유 결과 처리
+      debugPrint('✅ 공유 완료: ${result.status}');
+    } catch (e, stackTrace) {
+      debugPrint('❌ 공유 실패: $e');
+      debugPrint('스택 트레이스: $stackTrace');
+    }
+  }
+
+  /// 공유용 이미지 생성 (스크린샷)
+  Future<File> _generateShareImage() async {
+    final screenshotController = ScreenshotController();
+    final context = Get.context;
+    const pixelRatio = 2.0;
+    final fallBackView = WidgetsBinding.instance.platformDispatcher.views.first;
+    final view = context != null
+        ? (View.maybeOf(context) ?? fallBackView)
+        : fallBackView;
+    final baseMedia = MediaQueryData.fromView(view);
+    final shareMedia = baseMedia.copyWith(
+      size: _shareImageSize,
+      devicePixelRatio: pixelRatio,
+    );
+
+    final image = await screenshotController.captureFromWidget(
+      MediaQuery(
+        data: shareMedia,
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: SizedBox(
+            width: _shareImageSize.width,
+            child: ShareableResultCard(
+              verdict: verdictType.value,
+              headline: successHeadline.value.isNotEmpty
+                  ? successHeadline.value
+                  : _defaultHeadline(verdictType.value),
+              confidence: confidence.value.clamp(0.0, 1.0),
+              reason: successReason.value,
+              evidenceCount: evidenceCards.length,
+              userQuery: userQuery.value,
+              evidenceCards: evidenceCards.toList(),
+            ),
+          ),
+        ),
+      ),
+      context: context,
+      targetSize: _shareImageSize,
+      pixelRatio: pixelRatio,
+      delay: _shareRenderDelay,
+    );
+
+    if (image.isEmpty) {
+      throw StateError('공유 이미지 생성 실패: 빈 이미지');
+    }
+
+    // 임시 디렉토리에 저장
+    final directory = await getTemporaryDirectory();
+    final imagePath =
+        '${directory.path}/olala_result_${DateTime.now().millisecondsSinceEpoch}.png';
+    final imageFile = File(imagePath);
+
+    await imageFile.writeAsBytes(image);
+    return imageFile;
+  }
+
+
+  String _defaultHeadline(VerdictType v) {
+    switch (v) {
+      case VerdictType.trueClaim:
+        return '대체로 사실이에요';
+      case VerdictType.falseClaim:
+        return '사실과 달라요';
+      case VerdictType.mixed:
+        return '일부만 사실이에요';
+      case VerdictType.unverified:
+        return '판단하기 어려워요';
+    }
+  }
+
+  String _bookmarkLabel(VerdictType v) {
+    switch (v) {
+      case VerdictType.trueClaim:
+        return 'TRUE';
+      case VerdictType.falseClaim:
+        return 'FALSE';
+      case VerdictType.mixed:
+        return 'MIXED';
+      case VerdictType.unverified:
+        return 'UNVERIFIED';
+    }
+  }
+
+  final ApiVerifyRepository _repository = ApiVerifyRepository();
 
   @override
   void onInit() {
     super.onInit();
-    final args = Get.arguments;
-    if (args != null && args is TruthCheckRequest) {
-      _startVerification(args);
-    } else if (args != null && args is TruthCheckResponse) {
-      finalResult.value = args;
-      isLoading.value = false;
-    } else {
-      Get.snackbar('오류', '검증 요청 정보가 없습니다.');
-      isLoading.value = false;
+    final args = Get.arguments as Map<String, dynamic>?;
+    if (args != null && args['input'] != null) {
+      userQuery.value = args['input'] as String;
+      final mode = args['mode'] as String? ?? 'text';
+      startVerification(userQuery.value, mode);
     }
   }
 
-  void _startVerification(TruthCheckRequest request) {
-    isLoading.value = true;
-    logs.clear();
-    _addLog('initializing', '검증을 시작합니다...', {});
-
-    _truthCheckService.checkTruthStream(request).listen(
-      (event) {
-        final eventType = event['event'];
+  Future<void> startVerification(String input, String mode) async {
+    debugPrint('🚀 Starting verification: input=$input, mode=$mode');
+    resultState.value = ResultState.loading;
+    loadingHeadline.value = '검증 중이에요';
+    currentStage.value = 'initializing';
+    completedStages.clear();
+    
+    try {
+      debugPrint('📡 Getting stream from repository...');
+      final stream = _repository.verifyTruthStream(input: input, inputType: mode);
+      
+      debugPrint('🎧 Listening to stream...');
+      await for (final event in stream) {
+        debugPrint('📨 Received event: ${event['event']}');
+        final eventType = event['event'] as String?;
         
         if (eventType == 'stage_complete') {
-          final stage = event['stage'];
-          final data = event['data'] as Map<String, dynamic>? ?? {};
-          currentStage.value = stage;
+          // Update current stage
+          final stageName = event['stage'] as String? ?? 'unknown';
+          debugPrint('✅ Stage complete: $stageName');
+          completedStages.add(stageName);
+          currentStage.value = stageName;
           
-          final label = _mapStageToKor(stage);
-          _addLog(stage, label, data);
-        } 
-        else if (eventType == 'complete') {
-          final data = event['data'];
-          if (data != null) {
-            finalResult.value = TruthCheckResponse.fromJson(data);
-             _addLog('complete', '검증이 완료되었습니다.', {});
-          }
-          isLoading.value = false;
-        } 
-        else if (eventType == 'error') {
-          final msg = event['data']['display_message'] ?? '알 수 없는 오류';
-           _addLog('error', '오류 발생: $msg', event['data'] ?? {});
-          Get.snackbar('오류', msg, backgroundColor: Colors.redAccent, colorText: Colors.white);
-          isLoading.value = false;
+          // Update loading text based on stage
+          _updateLoadingText(stageName);
+          debugPrint('📊 Updated UI: headline=${loadingHeadline.value}, step=${loadingStep.value}');
+          
+        } else if (eventType == 'complete') {
+          // Final result received
+          debugPrint('🎉 Pipeline complete!');
+          final data = event['data'] as Map<String, dynamic>;
+          _processResult(data);
+          resultState.value = ResultState.success;
+          break;
+          
+        } else if (eventType == 'error') {
+          debugPrint('❌ Stream error: ${event['data']}');
+          resultState.value = ResultState.error;
+          break;
         }
-      },
-      onError: (e) {
-         _addLog('error', '통신 오류: $e', {});
-        isLoading.value = false;
-      },
-    );
+      }
+      debugPrint('🏁 Stream ended');
+    } catch (e) {
+      debugPrint('💥 Verify Error: $e');
+      resultState.value = ResultState.error;
+    }
+  }
+  
+  void _updateLoadingText(String stageName) {
+    if (stageName.contains('normalize')) {
+      loadingHeadline.value = '주장/콘텐츠 추출 중';
+      loadingStep.value = 0;
+    } else if (stageName.contains('stage03') || stageName.contains('wiki') || stageName.contains('web') || stageName.contains('collect')) {
+      loadingHeadline.value = '관련 근거 수집 중';
+      loadingStep.value = 1;
+    } else if (stageName.contains('judge') || stageName.contains('aggregate')) {
+      loadingHeadline.value = '근거 기반 판정 제공 중';
+      loadingStep.value = 2;
+    }
+  }
+  
+  void _processResult(Map<String, dynamic> resultMap) {
+    final label = resultMap['label'] as String;
+    verdictType.value = _parseVerdict(label);
+    confidence.value = (resultMap['confidence'] as num).toDouble();
+    
+    final summary = resultMap['summary'] as String?;
+    successHeadline.value = (summary != null && summary.length < 50) 
+        ? summary 
+        : _defaultHeadline(verdictType.value);
+        
+    final rationaleList = (resultMap['rationale'] as List?)?.cast<String>() ?? [];
+    successReason.value = rationaleList.isNotEmpty 
+        ? rationaleList.join('\n') 
+        : (summary ?? '분석이 완료되었습니다.');
+    
+    final citations = (resultMap['citations'] as List?) ?? [];
+    evidenceCards.value = citations.map<EvidenceCard>((c) => EvidenceCard.fromJson(c)).toList();
   }
 
-  void _addLog(String stage, String label, Map<String, dynamic> data) {
-    logs.add(StageLog(stage: stage, label: label, data: data));
-    // Auto scroll logic handled by listview usually
-  }
-
-  String _mapStageToKor(String stage) {
-    switch (stage) {
-      case 'stage01_normalize': return '1. 입력 내용 분석';
-      case 'stage02_querygen': return '2. 검색 검색어 생성';
-      case 'stage03_web': return '3. 웹 검색 수행';
-      case 'stage03_wiki': return '3. 위키 백과 검색';
-      case 'stage03_merge': return '3. 검색 결과 취합';
-      case 'stage04_score': return '4. 신뢰도 평가';
-      case 'stage05_topk': return '5. 핵심 증거 선별';
-      case 'stage06_verify_support': return '6. 지지 관점 검증';
-      case 'stage07_verify_skeptic': return '7. 반박 관점 검증';
-      case 'stage08_aggregate': return '8. 결과 종합';
-      case 'stage09_judge': return '9. 최종 판정';
-      case 'complete': return '완료';
-      default: return stage;
+  VerdictType _parseVerdict(String label) {
+    switch (label.toUpperCase()) {
+      case 'TRUE': return VerdictType.trueClaim;
+      case 'FALSE': return VerdictType.falseClaim;
+      case 'MIXED': return VerdictType.mixed;
+      default: return VerdictType.unverified;
     }
   }
 
-  void goBack() {
-    Get.back();
-  }
 }

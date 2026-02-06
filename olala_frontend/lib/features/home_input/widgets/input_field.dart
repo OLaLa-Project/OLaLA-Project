@@ -87,14 +87,14 @@ class InputField extends StatelessWidget {
 
   Widget _buildClearButton() {
     return Positioned(
-      right: 8,
-      top: 8,
+      right: 10,
+      top: 10,
       child: Material(
-        color: _primary.withOpacity(0.08), // 0.10 -> 0.08
-        borderRadius: BorderRadius.circular(14),
+        color: _primary.withOpacity(0.08),
+        shape: const CircleBorder(),
         child: InkWell(
           onTap: onClear,
-          borderRadius: BorderRadius.circular(14),
+          customBorder: const CircleBorder(),
           child: SizedBox(
             width: _clearSize,
             height: _clearSize,

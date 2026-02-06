@@ -161,6 +161,8 @@ async def run_pipeline_stream(req: TruthCheckRequest):
     
     if isinstance(req.stage_state, dict):
         state.update(req.stage_state)
+    if req.normalize_mode:
+        state["normalize_mode"] = req.normalize_mode
 
     stream_logger = logging.getLogger("uvicorn.error")
 

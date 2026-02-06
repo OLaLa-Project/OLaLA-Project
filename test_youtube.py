@@ -29,9 +29,17 @@ def test_youtube_fetch():
     if transcript:
         print("\n[SUCCESS] Transcript fetched!")
         print(f"Length: {len(transcript)} chars")
-        print("Preview (first 200 chars):")
+        print("Raw Preview (first 200 chars):")
         print("-" * 50)
         print(transcript[:200])
+        print("-" * 50)
+
+        cleaned = YoutubeService.clean_transcript(transcript)
+        print("\n[SUCCESS] Transcript Cleaned!")
+        print(f"Cleaned Length: {len(cleaned)} chars")
+        print("Cleaned Preview (first 200 chars):")
+        print("-" * 50)
+        print(cleaned[:200])
         print("-" * 50)
     else:
         print("\n[FAIL] Transcript not found or disabled.")

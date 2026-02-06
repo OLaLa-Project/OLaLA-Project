@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-
-import '../../app/routes.dart';
+import '../settings/settings_screen.dart'; 
 import '../../shared/storage/local_storage.dart';
-import '../../shared/services/truth_check_service.dart';
-import '../../data/provider/api_client.dart'; // New models (TruthCheckRequest, etc)
-// import '../../shared/models/truth_check_model.dart'; // Removed old models
+import '../history/history_screen.dart';
+import '../bookmark/bookmark_screen.dart';
+import '../verify/presentation/result_screen.dart'; // 경로는 실제 위치에 맞게 조정
+
 
 /// 입력 모드 열거형
 enum InputMode { url, text }
@@ -20,12 +20,6 @@ enum SnackbarType { info, error, success, warning }
 /// - 텍스트 입력 상태 관리
 /// - Coach 오버레이 표시 상태 및 타겟 Rect 측정
 class HomeInputController extends GetxController {
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 서비스
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  final TruthCheckService _truthCheckService = TruthCheckService();
-
   // ═══════════════════════════════════════════════════════════════════════════
   // 상태 (Observable)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -52,26 +46,30 @@ class HomeInputController extends GetxController {
   // Coach 타겟 GlobalKey (Rect 측정용)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  final GlobalKey selectorKey = GlobalKey(debugLabel: 'coach_selector');
-  final GlobalKey inputAreaKey = GlobalKey(debugLabel: 'coach_inputArea');
-  final GlobalKey verifyButtonKey = GlobalKey(debugLabel: 'coach_verify');
+  
+final GlobalKey settingsKey = GlobalKey(debugLabel: 'coach_settings');
+final GlobalKey selectorKey = GlobalKey(debugLabel: 'coach_selector');
+final GlobalKey inputAreaKey = GlobalKey(debugLabel: 'coach_inputArea');
+final GlobalKey verifyButtonKey = GlobalKey(debugLabel: 'coach_verify');
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Coach 타겟 Rect (측정된 위치/크기)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  final Rxn<Rect> selectorRect = Rxn<Rect>();
-  final Rxn<Rect> inputRect = Rxn<Rect>();
-  final Rxn<Rect> verifyRect = Rxn<Rect>();
+  
+final Rxn<Rect> settingsRect = Rxn<Rect>();
+final Rxn<Rect> selectorRect = Rxn<Rect>();
+final Rxn<Rect> inputRect = Rxn<Rect>();
+final Rxn<Rect> verifyRect = Rxn<Rect>();
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 상수
   // ═══════════════════════════════════════════════════════════════════════════
 
   static const String _urlHint =
-      '예) https://example.com/news/123\n검증할 URL을 붙여넣어 주세요.';
+      '검증할 URL을 붙여넣어 주세요.\n예) https://example.com/news/123';
   static const String _textHint =
-      '예) "OOO는 2024년에 노벨상을 받았다."\n검증할 문장을 입력해 주세요.';
+      '검증할 문장을 입력해 주세요.\n예) "OOO는 2024년에 노벨상을 받았다."';
   static const Duration _coachShowDelay = Duration(milliseconds: 300);
 
   // Snackbar 정책(파일 내부 표준화)
@@ -164,9 +162,12 @@ class HomeInputController extends GetxController {
   // 네비게이션 (Public)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  void goSettings() => Get.toNamed(AppRoutes.settings);
-  void goHistory() => Get.toNamed(AppRoutes.history);
-  void goBookmark() => Get.toNamed(AppRoutes.bookmark);
+  void goSettings() {
+    if (showCoach.value) return;
+    Get.to(() => const SettingsScreen());
+  }
+  void goHistory() => Get.to(() => const HistoryScreen());
+  void goBookmark() => Get.to(() => const BookmarkScreen());
 
   /// 홈 화면 새로고침 (입력 초기화 + URL 모드)
   void refreshHome() {
@@ -195,7 +196,9 @@ class HomeInputController extends GetxController {
   }
 
   /// GlobalKey로부터 Rect 측정
-  Rect? _measureRect(GlobalKey key) {
+  // ───────────────────────────────────────────────────────────────────────────
+
+Rect? _measureRect(GlobalKey key) {
     final context = key.currentContext;
     if (context == null) return null;
 
@@ -206,9 +209,15 @@ class HomeInputController extends GetxController {
     return offset & renderObject.size;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 검증 관련 (Public)
-  // ═══════════════════════════════════════════════════════════════════════════
+  /// Help 오버레이를 띄우기 직전에 호출: HomeInput 영역 Rect를 최신으로 측정
+  Future<void> captureHelpRects() async {
+    await Future<void>.delayed(_coachShowDelay);
+    settingsRect.value = _measureRect(settingsKey);
+    selectorRect.value = _measureRect(selectorKey);
+    inputRect.value = _measureRect(inputAreaKey);
+    verifyRect.value = _measureRect(verifyButtonKey);
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 검증 관련 (Public)
@@ -238,30 +247,31 @@ class HomeInputController extends GetxController {
         message: '검증 중 오류가 발생했습니다.',
         type: SnackbarType.error,
       );
+    } finally {
       isVerifying.value = false;
-    } 
-    // finally is handled in stream completion
+    }
   }
 
-  /// 실제 검증 수행 (FastAPI 연동 - 스트리밍)
+  /// 실제 검증 수행 (향후 FastAPI 연동)
   Future<void> _performVerification() async {
-    // 입력값 및 모드 가져오기
-    final inputText = textController.text.trim();
-    // InputType enum mismatch fix: defined in old model vs string in new model.
-    // New model uses String for simplicity.
-    final inputTypeStr = mode.value == InputMode.url ? 'url' : 'text';
+    final input = textController.text.trim();
+    final inputMode = mode.value;
 
-    // API 요청 생성
-    final request = TruthCheckRequest(
-      inputType: inputTypeStr,
-      inputPayload: inputText,
-      language: 'ko',
-      includeFullOutputs: false,
-    );
+    // ✅ ResultScreen에서 사용할 입력값 전달
+    final args = {
+      'mode': inputMode.name, // 'url' or 'text'
+      'input': input,
+    };
 
-    // 바로 결과 화면으로 이동하여 스트리밍 진행
-    isVerifying.value = false; // Reset local state as we move away
-    Get.toNamed(AppRoutes.result, arguments: request);
+    // ✅ ResultScreen으로 이동하면 ResultLoading UI가 즉시 뜹니다.
+    Get.to(() => const ResultScreen(), arguments: args);
+
+    // ❌ 기존 "연동 전" 스낵바는 제거(또는 주석)
+    // _showSnackbar(
+    //   title: '검증 시작',
+    //   message: 'AI 검증 연동 전입니다. (추후 FastAPI 연결)',
+    //   type: SnackbarType.info,
+    // );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

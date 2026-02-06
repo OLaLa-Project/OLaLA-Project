@@ -8,5 +8,4 @@ class AppRoutes {
   static const history = '/history';
   static const bookmark = '/bookmark';
   static const settings = '/settings';
-  static const result = '/result';
 }

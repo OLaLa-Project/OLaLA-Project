@@ -218,6 +218,7 @@ def run_stage_sequence(state: Dict[str, Any], start_stage: str | None, end_stage
         end_idx = start_idx
 
     for name, fn in STAGE_SEQUENCE[start_idx : end_idx + 1]:
+        print(f"DEBUG: Executing stage {name}")
         # Log before execution (optional, but consistent with wrapper)
         # Using _with_log logic inside loop for simplicity or wrapper
         out = _with_log(name, fn)(state)

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 # 프롬프트 파일 경로
 PROMPT_FILE = Path(__file__).parent / "prompt_normalize.txt"
+PROMPT_FILE_YOUTUBE = Path(__file__).parent / "prompt_normalize_youtube.txt"
 
 # 설정
 DEFAULT_LANGUAGE = "ko"
@@ -23,6 +24,11 @@ MAX_CONTENT_LENGTH = None
 def load_system_prompt() -> str:
     """시스템 프롬프트 로드 (캐싱)."""
     return PROMPT_FILE.read_text(encoding="utf-8")
+
+@lru_cache(maxsize=1)
+def load_youtube_prompt() -> str:
+    """유튜브 전용 시스템 프롬프트 로드 (캐싱)."""
+    return PROMPT_FILE_YOUTUBE.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +269,12 @@ def run(state: dict) -> dict:
                 page_data = fetch_url_content(url_info["normalized_url"])
                 
                 if transcript:
+                    # [NEW] 자막 정제 (룰베이스)
+                    transcript = YoutubeService.clean_transcript(transcript)
+
                     fetched["text"] = transcript
                     fetched["title"] = page_data.get("title") or f"YouTube Video ({video_id})"
-                    logger.info(f"[{trace_id}] YouTube Transcript used: {len(transcript)} chars")
+                    logger.info(f"[{trace_id}] YouTube Transcript used (cleaned): {len(transcript)} chars")
                 else:
                     # 자막 실패 시 일반 웹 페이지로 취급 (설명란 등)
                     logger.warning(f"[{trace_id}] YouTube Transcript failed, falling back to web fetch")
@@ -289,7 +298,15 @@ def run(state: dict) -> dict:
             )
             logger.info(f"[{trace_id}] 기본 정규화 사용")
         else:
-            system_prompt = load_system_prompt()
+            # 유튜브 여부에 따라 프롬프트 선택
+            is_youtube_script = ("youtube.com" in url or "youtu.be" in url) and fetched.get("text")
+            
+            if is_youtube_script:
+                system_prompt = load_youtube_prompt()
+                logger.info(f"[{trace_id}] YouTube 전용 프롬프트 사용")
+            else:
+                system_prompt = load_system_prompt()
+
             user_prompt = build_normalize_user_prompt(
                 user_input=snippet,
                 article_title=fetched["title"],
@@ -318,6 +335,10 @@ def run(state: dict) -> dict:
         state["original_intent"] = normalized_obj.original_intent # New State Field
         state["language"] = language or DEFAULT_LANGUAGE
 
+        # [Moved Up] 유튜브 자막인 경우 별도 필드로 저장
+        if ("youtube.com" in url or "youtu.be" in url) and fetched["text"]:
+             state["transcript"] = fetched["text"]
+
         # UX 개선: 유튜브 자막이 있는 경우 snippet에 자막 미리보기 표시
         evidence_snippet = snippet
         if "transcript" in state:
@@ -336,14 +357,6 @@ def run(state: dict) -> dict:
             "extracted": entities,
             "count": len(entities),
         }
-        
-        # 유튜브 자막인 경우 별도 필드로 저장 (UI 노출용)
-        # video_id 변수가 위에서 정의되었으므로 사용 가능 여부 확인 필요.
-        # 안전하게 URL이 유튜브이고 내용이 있으면 transcript로 간주
-        if "youtube.com" in url or "youtu.be" in url:
-             # fetched['text']가 비어있지 않다면 자막일 확률 높음
-             if fetched["text"]:
-                 state["transcript"] = fetched["text"]
 
         logger.info(
             f"[{trace_id}] Stage1 완료: claim={claim_text[:150]}..., "
@@ -359,3 +372,7 @@ def run(state: dict) -> dict:
         state["entity_map"] = {"extracted": [], "count": 0}
 
     return state
+
+
+
+    

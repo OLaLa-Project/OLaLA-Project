@@ -52,6 +52,41 @@ class YoutubeService:
         except (TranscriptsDisabled, NoTranscriptFound):
             logger.warning(f"No transcript found for video {video_id}")
             return None
-        except Exception as e:
-            logger.error(f"Failed to fetch transcript for {video_id}: {e}")
-            return None
+    @staticmethod
+    def clean_transcript(text: str) -> str:
+        """자막 텍스트 정제 (규칙 기반)."""
+        if not text:
+            return ""
+
+        # 1. 문장부호 및 불필요한 기호 정리
+        # '>>'는 화자 전환을 의미하는 경우가 많으나, 너무 많으면 가독성 해침 -> 줄바꿈으로 변경하여 문리 분리 유도
+        cleaned = text.replace(">>", " ").replace("&nbsp;", " ")
+
+        # 2. 반복되는 단어/구문 축약 (예: "네 네 네" -> "네")
+        # 동일 단어가 공백으로 구분되어 2회 이상 반복될 때 하나로. 
+        # \b(\w+) 은 한글 단어도 매칭됨.
+        cleaned = re.sub(r'\b(\w+)(?:\s+\1\b)+', r'\1', cleaned)
+
+        # 3. 추임새/필러 제거 (보수적 접근)
+        # 문장 시작 부분의 "네.", "아.", "음.", "그," 등을 제거
+        fillers = r'(?:네|아|음|어|그|저|뭐|이제|약간|그냥|진짜|사실|그래서)'
+        
+        # 텍스트를 문장 단위(마침표 등)로 나누어 처리하거나, 
+        # 전체 텍스트에서 패턴 매칭. 여기서는 간단히 re.sub 사용.
+        # 문장 시작(Start of string) 또는 문장 부호 뒤(.?!) 공백 후
+        
+        # 패턴: (문장시작|종결부호공백) + (필러) + (선택적 구두점) + (공백)
+        # 반복적으로 제거하기 위해 loop 사용이 어려우니 regex로 처리
+        # 예: "네. 아. 그렇군요" -> "그렇군요"
+        
+        # 전략: 먼저 텍스트를 더 잘게 쪼갠 후 다시 합치는 방식 사용
+        # 여기서는 간단한 전처리만 수행
+        
+        # "네." "아," 처럼 독립적으로 쓰인 필러 제거
+        cleaned = re.sub(fr'(?<=[\s.?!])({fillers})[.,]?\s+', '', cleaned)
+        cleaned = re.sub(fr'^{fillers}[.,]?\s+', '', cleaned)
+
+        # 4. 공백 정리
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        
+        return cleaned

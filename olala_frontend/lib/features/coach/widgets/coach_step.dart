@@ -22,7 +22,7 @@ class _CloseButton extends StatelessWidget {
             child: Center(
               child: Icon(
                 Icons.close_rounded,
-                size: 40,
+                size: 34,
                 color: Colors.white.withOpacity(0.9),
               ),
             ),

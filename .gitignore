@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 .env
 .env.*
+venv/
 
 # Flutter / Dart
 .dart_tool/
@@ -22,6 +23,10 @@ node_modules/
 checkpoints/
 *.safetensors
 *.bin
+# Flutter SDK / Archives
+flutter_linux_*.tar.xz
+flutter_old/
+flutter/
 
 # Logs
 *.log

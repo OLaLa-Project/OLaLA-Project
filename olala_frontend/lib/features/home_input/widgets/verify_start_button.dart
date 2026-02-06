@@ -33,16 +33,16 @@ class VerifyStartButton extends StatelessWidget {
       child: ElevatedButton(
         onPressed: isLoading ? null : onPressed,
         style: ButtonStyle(
-          padding: const WidgetStatePropertyAll(EdgeInsets.zero),
-          elevation: const WidgetStatePropertyAll(0),
-          backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
-          shape: WidgetStatePropertyAll(
+          padding: const MaterialStatePropertyAll(EdgeInsets.zero),
+          elevation: const MaterialStatePropertyAll(0),
+          backgroundColor: const MaterialStatePropertyAll(Colors.transparent),
+          shape: MaterialStatePropertyAll(
             RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(_radius),
             ),
           ),
-          overlayColor: WidgetStateProperty.resolveWith((states) {
-            if (states.contains(WidgetState.pressed)) {
+          overlayColor: MaterialStateProperty.resolveWith((states) {
+            if (states.contains(MaterialState.pressed)) {
               return Colors.black.withOpacity(0.08);
             }
             return null;

@@ -33,10 +33,10 @@ class _OverlayStepSpec {
               ? '내용을 입력하거나, 복사한 내용을 붙여넣으면\n바로 분석할 수 있어요.'
               : '버튼을 누르면 근거와 함께 신뢰도를 분석해드려요.',
 
-      // ✅ 전부 둥근 형태로 통일
+      // ✅ 전부 둥근 형태로 통일: 둥근 모서리 정도
       useRounded: true,
-      holeRadius: is1 ? 12 : is2 ? 20 : 28,
-      borderRadius: is1 ? 12 : is2 ? 22 : 30,
+      holeRadius: is1 ? 12 : is2 ? 20 : 28, // 구멍의 둥근 정도
+      borderRadius: is1 ? 16 : is2 ? 24 : 32, //테두리의 둥근 정도
     );
   }
 

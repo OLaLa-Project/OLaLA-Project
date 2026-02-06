@@ -159,9 +159,9 @@ class _CoachOverlayState extends State<CoachOverlay>
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.92),
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
+                          color: Colors.white.withOpacity(0.95),
+                          fontSize: 19,
+                          fontWeight: FontWeight.w700,
                           letterSpacing: -0.2,
                         ),
                       ),

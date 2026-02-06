@@ -8,8 +8,6 @@ import 'theme/app_theme.dart';
 import '../features/splash/splash_screen.dart';
 import '../features/onboarding/onboarding_screen.dart';
 import '../features/shell/shell_screen.dart';
-import '../features/verify/presentation/result_screen.dart';
-import '../features/verify/presentation/result_controller.dart';
 
 class OLaLAApp extends StatelessWidget {
   const OLaLAApp({super.key});
@@ -28,14 +26,7 @@ class OLaLAApp extends StatelessWidget {
           page: () => const OnboardingScreen(),
         ),
         GetPage(name: AppRoutes.shell, page: () => const ShellScreen()),
-        GetPage(
-          name: AppRoutes.result,
-          page: () => const ResultScreen(),
-          binding: BindingsBuilder(() {
-            // Lazy put controller if not already present, or rely on bindings
-            Get.lazyPut(() => ResultController()); 
-          }),
-        ),
+        // ✅ Coach 라우트 제거 (오버레이로 변경)
       ],
     );
   }

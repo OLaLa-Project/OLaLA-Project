@@ -8,7 +8,12 @@ export default defineConfig({
     host: true,
     port: 5175,
     proxy: {
-      "/api": "http://backend:8080",
+      "/api": {
+        target: "http://backend:8080",
+        changeOrigin: true,
+        timeout: 300000,
+        proxyTimeout: 300000,
+      },
     },
   },
 });

@@ -3,6 +3,8 @@ import 'package:get/get.dart';
 import 'package:phosphor_flutter/phosphor_flutter.dart';
 
 import 'home_input_controller.dart';
+import '../shell/shell_controller.dart';
+import 'help/widgets/tutorial_content.dart';
 import 'widgets/input_type_selector.dart';
 import 'widgets/input_field.dart';
 import 'widgets/verify_start_button.dart';
@@ -48,11 +50,33 @@ class HomeInputScreen extends StatelessWidget {
     );
   }
 
-  void _navigateToHelp(BuildContext context) {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const HelpScreen()),
-    );
-  }
+  Future<void> _navigateToHelp(BuildContext context) async {
+  final controller = Get.find<HomeInputController>();
+  final shell = Get.isRegistered<ShellController>() ? Get.find<ShellController>() : null;
+
+  // 1) HomeInput 영역 Rect 측정
+  await controller.captureHelpRects();
+
+  // 2) Shell(bottom nav) Rect 취합
+  final rects = <GuideTarget, Rect?>{
+    GuideTarget.settings: controller.settingsRect.value,
+    GuideTarget.inputTypeSelector: controller.selectorRect.value,
+    GuideTarget.inputField: controller.inputRect.value,
+    GuideTarget.verifyStartButton: controller.verifyRect.value,
+    GuideTarget.navHistory: shell?.navHistoryRect.value,
+    GuideTarget.navVerify: shell?.navVerifyRect.value,
+    GuideTarget.navBookmark: shell?.navBookmarkRect.value,
+  };
+
+  // 3) 오버레이로 표시(투명 route)
+  Navigator.of(context).push(
+    PageRouteBuilder(
+      opaque: false,
+      barrierColor: Colors.transparent,
+      pageBuilder: (_, __, ___) => HelpScreen(rects: rects),
+    ),
+  );
+}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -75,6 +99,7 @@ class _MainContent extends StatelessWidget {
             Obx(() => _CustomAppBar(
                   onSettingsTap: controller.goSettings,
                   hideSettings: controller.showCoach.value,
+                  settingsKey: controller.settingsKey,
                 )),
             Expanded(
               child: _InputSection(controller: controller),
@@ -93,10 +118,12 @@ class _MainContent extends StatelessWidget {
 class _CustomAppBar extends StatelessWidget {
   final VoidCallback onSettingsTap;
   final bool hideSettings;
+  final Key? settingsKey;
 
   const _CustomAppBar({
     required this.onSettingsTap,
     required this.hideSettings,
+    this.settingsKey,
   });
 
   @override
@@ -125,7 +152,7 @@ class _CustomAppBar extends StatelessWidget {
             width: kMinInteractiveDimension,
             child: hideSettings
                 ? const SizedBox.shrink()
-                : SettingsIconButton(onPressed: onSettingsTap),
+                : SettingsIconButton(key: settingsKey, onPressed: onSettingsTap),
           ),
         ],
       ),

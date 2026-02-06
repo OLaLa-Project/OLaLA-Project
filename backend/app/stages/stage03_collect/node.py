@@ -335,10 +335,6 @@ def run_merge(state: dict) -> dict:
     logger.info(f"Stage 3 (Merge) Complete. Total {len(all_candidates)} candidates (Filtered {len(raw_candidates) - len(all_candidates)}).")
     return {
         "evidence_candidates": all_candidates,
-        "wiki_candidates": None,
-        "web_candidates": None,
-        "search_queries": None,  # queries are no longer needed
-        "query_variants": None   # variants are no longer needed
     }
 
 # Legacy run for compatibility if needed (wraps all)

@@ -48,7 +48,7 @@ class SLMConfig:
             base_url=_get("BASE_URL", "http://localhost:8080/v1"),
             api_key=_get("API_KEY", "local-slm-key"),
             model=_get("MODEL", default_model),
-            timeout=int(_get("TIMEOUT_SECONDS", "60")),
+            timeout=int(_get("TIMEOUT_SECONDS", "300")),
             max_tokens=int(_get("MAX_TOKENS", "1024")),
             temperature=float(_get("TEMPERATURE", "0.1")),
         )

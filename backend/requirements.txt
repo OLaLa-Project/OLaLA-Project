@@ -14,3 +14,5 @@ json_repair>=0.25.0
 youtube-transcript-api>=0.6.0
 langgraph>=0.0.40
 numpy>=1.26.0
+# Note: Flutter SDK 3.19.0 or higher is required for the frontend
+# Download from https://flutter.dev/docs/get-started/install/linux
