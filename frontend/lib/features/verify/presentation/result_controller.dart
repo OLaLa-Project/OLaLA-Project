@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:share_plus/share_plus.dart';
@@ -5,6 +7,7 @@ import 'package:screenshot/screenshot.dart';
 import 'package:olala_frontend/shared/utils/share_xfile.dart';
 import '../models/evidence_card.dart';
 import '../repository/api_verify_repository.dart';
+import 'stream_event_adapter.dart';
 import '../../shell/shell_controller.dart';
 import '../../settings/settings_screen.dart';
 import '../../history/history_screen.dart';
@@ -21,6 +24,8 @@ class ResultController extends GetxController {
   static const Size _shareImageSize = Size(800, 1400);
   static const Duration _shareRenderDelay = Duration(seconds: 1);
   static const Duration _minStepHold = Duration(milliseconds: 900);
+  static const Duration _streamStallThreshold = Duration(seconds: 8);
+  static const Duration _streamWatchInterval = Duration(seconds: 1);
 
   // ─────────────────────────────────────────
   // Result State
@@ -39,6 +44,9 @@ class ResultController extends GetxController {
   final completedStages = <String>[].obs;
   int _visibleUiStep = 1;
   DateTime _stepChangedAt = DateTime.now();
+  DateTime _lastStreamEventAt = DateTime.now();
+  bool _streamDelayedNoticeShown = false;
+  Timer? _streamWatchdog;
 
   // ─────────────────────────────────────────
   // Success UI (브랜드 결과 화면)
@@ -255,61 +263,89 @@ class ResultController extends GetxController {
     completedStages.clear();
     _visibleUiStep = 1;
     _stepChangedAt = DateTime.now();
-    
+    _lastStreamEventAt = DateTime.now();
+    _streamDelayedNoticeShown = false;
+    bool receivedComplete = false;
+    _startStreamWatchdog();
+
     try {
       debugPrint('📡 Getting stream from repository...');
       final stream = _repository.verifyTruthStream(input: input, inputType: mode);
-      
+
       debugPrint('🎧 Listening to stream...');
       await for (final event in stream) {
-        debugPrint('📨 Received event: ${event['event']}');
-        final eventType = event['event'] as String?;
+        _markStreamSignal(event.receivedAt);
+        debugPrint('📨 Received event: ${event.event}');
 
-        if (eventType == 'step_started' || eventType == 'step_completed') {
-          await _updateLoadingFromUiStep(event);
-          continue;
+        switch (event.type) {
+          case StreamEventType.streamOpen:
+            debugPrint('🔓 Stream opened: trace=${event.traceId}');
+            loadingSubtext.value = '스트림 연결 완료. 분석을 시작하고 있어요.';
+            continue;
+          case StreamEventType.heartbeat:
+            final heartbeatStage = event.currentStage ?? event.stage;
+            if (heartbeatStage != null && heartbeatStage.isNotEmpty) {
+              currentStage.value = heartbeatStage;
+            }
+            loadingSubtext.value = _heartbeatSubtext(heartbeatStage, event.idleMs);
+            continue;
+          case StreamEventType.stepStarted:
+          case StreamEventType.stepCompleted:
+            await _updateLoadingFromUiStep(event.uiStep, event.uiStepTitle);
+            continue;
+          case StreamEventType.stageComplete:
+            final stageName = event.stage ?? 'unknown';
+            final stageData = event.data;
+            debugPrint('✅ Stage complete: $stageName');
+            completedStages.add(stageName);
+            currentStage.value = stageName;
+
+            if (!(await _updateLoadingFromUiStep(event.uiStep, event.uiStepTitle))) {
+              _updateLoadingText(stageName);
+            }
+            _applyStageStatus(stageName);
+            _applyStageOutputPreview(stageName, stageData);
+            debugPrint('📊 Updated UI: headline=${loadingHeadline.value}, step=${loadingStep.value}');
+            break;
+          case StreamEventType.complete:
+            debugPrint('🎉 Pipeline complete!');
+            receivedComplete = true;
+            await _updateLoadingFromUiStep(3, '근거 기반 판단 제공');
+            if (event.data.isEmpty) {
+              debugPrint('❌ Complete event without payload');
+              resultState.value = ResultState.error;
+              break;
+            }
+            _processResult(event.data);
+            resultState.value = ResultState.success;
+            break;
+          case StreamEventType.error:
+            debugPrint('❌ Stream error: ${event.data}');
+            resultState.value = ResultState.error;
+            break;
+          case StreamEventType.unknown:
+            debugPrint('⚠️ Unknown stream event, skipping: ${event.event}');
+            continue;
         }
-        
-        if (eventType == 'stage_complete') {
-          // Update current stage
-          final stageName = event['stage'] as String? ?? 'unknown';
-          final stageData = event['data'];
-          debugPrint('✅ Stage complete: $stageName');
-          completedStages.add(stageName);
-          currentStage.value = stageName;
-          
-          // Prefer gateway-provided ui_step. Fallback to stage-name heuristic.
-          if (!(await _updateLoadingFromUiStep(event))) {
-            _updateLoadingText(stageName);
-          }
-          _applyStageStatus(stageName);
-          _applyStageOutputPreview(stageName, stageData);
-          debugPrint('📊 Updated UI: headline=${loadingHeadline.value}, step=${loadingStep.value}');
-          
-        } else if (eventType == 'complete') {
-          // Final result received
-          debugPrint('🎉 Pipeline complete!');
-          await _updateLoadingFromUiStep(const {'ui_step': 3, 'ui_step_title': '근거 기반 판단 제공'});
-          final data = event['data'] as Map<String, dynamic>;
-          _processResult(data);
-          resultState.value = ResultState.success;
-          break;
-          
-        } else if (eventType == 'error') {
-          debugPrint('❌ Stream error: ${event['data']}');
-          resultState.value = ResultState.error;
+
+        if (resultState.value != ResultState.loading) {
           break;
         }
+      }
+      if (resultState.value == ResultState.loading && !receivedComplete) {
+        debugPrint('❌ Stream ended without complete event');
+        resultState.value = ResultState.error;
       }
       debugPrint('🏁 Stream ended');
     } catch (e) {
       debugPrint('💥 Verify Error: $e');
       resultState.value = ResultState.error;
+    } finally {
+      _stopStreamWatchdog();
     }
   }
 
-  Future<bool> _updateLoadingFromUiStep(Map<String, dynamic> event) async {
-    final uiStep = _parseUiStep(event['ui_step']);
+  Future<bool> _updateLoadingFromUiStep(int? uiStep, String? uiStepTitle) async {
     if (uiStep == null) {
       return false;
     }
@@ -326,17 +362,69 @@ class ResultController extends GetxController {
 
     loadingStep.value = _visibleUiStep - 1;
 
-    final uiStepTitle = (event['ui_step_title'] as String?)?.trim();
-    loadingHeadline.value = (uiStepTitle != null && uiStepTitle.isNotEmpty)
-        ? '$uiStepTitle 중'
+    final resolvedTitle = uiStepTitle?.trim();
+    loadingHeadline.value = (resolvedTitle != null && resolvedTitle.isNotEmpty)
+        ? '$resolvedTitle 중'
         : _headlineByStep(_visibleUiStep);
     loadingSubtext.value = _subtextByStep(_visibleUiStep);
     return true;
   }
 
-  int? _parseUiStep(dynamic raw) {
-    if (raw is int) return raw;
-    if (raw is String) return int.tryParse(raw);
+  void _startStreamWatchdog() {
+    _stopStreamWatchdog();
+    _streamWatchdog = Timer.periodic(_streamWatchInterval, (_) {
+      if (resultState.value != ResultState.loading) {
+        return;
+      }
+      final stalledFor = DateTime.now().difference(_lastStreamEventAt);
+      if (stalledFor >= _streamStallThreshold && !_streamDelayedNoticeShown) {
+        loadingSubtext.value = '네트워크/서버 응답이 지연되고 있어요. 잠시만 기다려주세요.';
+        _streamDelayedNoticeShown = true;
+      }
+    });
+  }
+
+  void _stopStreamWatchdog() {
+    _streamWatchdog?.cancel();
+    _streamWatchdog = null;
+  }
+
+  void _markStreamSignal(DateTime receivedAt) {
+    _lastStreamEventAt = receivedAt;
+    _streamDelayedNoticeShown = false;
+  }
+
+  Map<String, dynamic>? _asMap(dynamic value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+    if (value is Map) {
+      return Map<String, dynamic>.from(value);
+    }
+    return null;
+  }
+
+  int _citationCountFromPack(Map<String, dynamic>? pack) {
+    if (pack == null) {
+      return 0;
+    }
+    final citations = pack['citations'];
+    if (citations is List) {
+      return citations.length;
+    }
+    return 0;
+  }
+
+  int? _asInt(dynamic value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    if (value is String) {
+      return int.tryParse(value);
+    }
     return null;
   }
 
@@ -433,33 +521,38 @@ class ResultController extends GetxController {
     }
 
     if (stageName == 'stage06_verify_support') {
-      final supportPack = stageData['support_pack'];
-      if (supportPack is Map<String, dynamic>) {
-        final citations = supportPack['citations'];
-        final count = citations is List ? citations.length : 0;
+      final supportPack = _asMap(stageData['verdict_support']) ?? _asMap(stageData['support_pack']);
+      if (supportPack != null) {
+        final count = _citationCountFromPack(supportPack);
         loadingSubtext.value = '지지 근거 검증 완료: 인용 ${count}건';
       }
       return;
     }
 
     if (stageName == 'stage07_verify_skeptic') {
-      final skepticPack = stageData['skeptic_pack'];
-      if (skepticPack is Map<String, dynamic>) {
-        final citations = skepticPack['citations'];
-        final count = citations is List ? citations.length : 0;
+      final skepticPack = _asMap(stageData['verdict_skeptic']) ?? _asMap(stageData['skeptic_pack']);
+      if (skepticPack != null) {
+        final count = _citationCountFromPack(skepticPack);
         loadingSubtext.value = '반박 근거 검증 완료: 인용 ${count}건';
       }
       return;
     }
 
     if (stageName == 'stage08_aggregate') {
-      final aggregate = stageData['aggregate_result'];
-      if (aggregate is Map<String, dynamic>) {
-        final supportScore = aggregate['support_score'];
-        final skepticScore = aggregate['skeptic_score'];
-        if (supportScore != null && skepticScore != null) {
-          loadingSubtext.value = '종합 점수 계산 완료: 지지 ${supportScore}, 반박 ${skepticScore}';
-        }
+      final prepMeta = _asMap(stageData['judge_prep_meta']);
+      if (prepMeta != null) {
+        final supportCount = _asInt(prepMeta['support_citation_count']) ?? 0;
+        final skepticCount = _asInt(prepMeta['skeptic_citation_count']) ?? 0;
+        loadingSubtext.value = '판정 준비 완료: 지지 인용 ${supportCount}건, 반박 인용 ${skepticCount}건';
+        return;
+      }
+
+      final supportPack = _asMap(stageData['support_pack']);
+      final skepticPack = _asMap(stageData['skeptic_pack']);
+      final supportCount = _citationCountFromPack(supportPack);
+      final skepticCount = _citationCountFromPack(skepticPack);
+      if (supportCount > 0 || skepticCount > 0) {
+        loadingSubtext.value = '판정 준비 완료: 지지 인용 ${supportCount}건, 반박 인용 ${skepticCount}건';
       }
       return;
     }
@@ -477,6 +570,37 @@ class ResultController extends GetxController {
         }
       }
     }
+  }
+
+  String _heartbeatSubtext(String? stageName, int? idleMs) {
+    final stageHint = _stageHint(stageName);
+    final idleSeconds = idleMs != null ? (idleMs ~/ 1000) : null;
+    if (stageHint != null && idleSeconds != null) {
+      return '$stageHint 단계 분석 진행 중... (${idleSeconds}s)';
+    }
+    if (stageHint != null) {
+      return '$stageHint 단계 분석 진행 중...';
+    }
+    if (idleSeconds != null) {
+      return '분석 진행 중... (${idleSeconds}s)';
+    }
+    return '분석 진행 중...';
+  }
+
+  String? _stageHint(String? stageName) {
+    if (stageName == null || stageName.isEmpty || stageName == 'initializing') {
+      return null;
+    }
+    if (stageName.startsWith('stage01') || stageName.startsWith('stage02') || stageName == 'adapter_queries') {
+      return '주장/콘텐츠 추출';
+    }
+    if (stageName.startsWith('stage03') || stageName.startsWith('stage04') || stageName.startsWith('stage05')) {
+      return '관련 근거 수집';
+    }
+    if (stageName.startsWith('stage06') || stageName.startsWith('stage07') || stageName.startsWith('stage08') || stageName.startsWith('stage09')) {
+      return '근거 기반 판단';
+    }
+    return stageName;
   }
   
   void _updateLoadingText(String stageName) {
@@ -573,6 +697,12 @@ class ResultController extends GetxController {
       case 'MIXED': return VerdictType.mixed;
       default: return VerdictType.unverified;
     }
+  }
+
+  @override
+  void onClose() {
+    _stopStreamWatchdog();
+    super.onClose();
   }
 
 }

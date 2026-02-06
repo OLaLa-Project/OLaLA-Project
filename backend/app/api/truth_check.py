@@ -13,6 +13,7 @@ from app.core.errors import (
 )
 from app.core.schemas import TruthCheckRequest, TruthCheckResponse
 from app.db.session import get_db
+from app.gateway.service import run_pipeline_stream_v2
 from app.orchestrator.database.repos.analysis_repo import AnalysisRepository
 from app.orchestrator.service import run_pipeline, run_pipeline_stream
 
@@ -54,3 +55,25 @@ async def truth_check_stream(req: TruthCheckRequest):
         raise to_http_exception(PIPELINE_STREAM_INIT_FAILED)
 
     return StreamingResponse(stream, media_type="application/x-ndjson")
+
+
+@router.post("/api/truth/check/stream-v2")
+async def truth_check_stream_v2(req: TruthCheckRequest):
+    """
+    Streaming v2 endpoint.
+    Adds stream_open/heartbeat events for better long-stage UX.
+    """
+    try:
+        stream = run_pipeline_stream_v2(req)
+    except Exception:
+        logger.exception("Pipeline stream v2 initialization failed")
+        raise to_http_exception(PIPELINE_STREAM_INIT_FAILED)
+
+    return StreamingResponse(
+        stream,
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

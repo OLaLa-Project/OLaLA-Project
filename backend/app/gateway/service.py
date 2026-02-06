@@ -1,13 +1,20 @@
 import uuid
 import json
 import logging
+import asyncio
+import time
 from typing import Dict, Any, List
 from datetime import datetime, timezone
 
 from app.core.schemas import TruthCheckRequest, TruthCheckResponse, Citation, ModelInfo
+from app.graph.checkpoint import resolve_checkpoint_thread_id
 from app.graph.graph import build_langgraph, STAGE_SEQUENCE, STAGE_OUTPUT_KEYS, run_stage_sequence
 
 logger = logging.getLogger(__name__)
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 UI_STEP_TITLES: Dict[int, str] = {
     1: "주장/콘텐츠 추출",
@@ -185,8 +192,16 @@ async def run_pipeline_stream(req: TruthCheckRequest):
         return
 
     trace_id = str(uuid.uuid4())
+    requested_thread_id = req.checkpoint_thread_id if req.checkpoint_resume else None
+    checkpoint_thread_id, checkpoint_resumed, checkpoint_expired = resolve_checkpoint_thread_id(
+        requested_thread_id,
+        trace_id,
+    )
     state: Dict[str, Any] = {
         "trace_id": trace_id,
+        "checkpoint_thread_id": checkpoint_thread_id,
+        "checkpoint_resumed": checkpoint_resumed,
+        "checkpoint_expired": checkpoint_expired,
         "input_type": req.input_type,
         "input_payload": req.input_payload,
         "user_request": req.user_request or "",
@@ -212,6 +227,9 @@ async def run_pipeline_stream(req: TruthCheckRequest):
 
     final_state = state.copy()
     current_stage = "initializing"
+    stream_config: Dict[str, Dict[str, str]] = {
+        "configurable": {"thread_id": checkpoint_thread_id}
+    }
     
     buffered_stage02: Dict[str, Any] | None = None
     emitted_stage02 = False
@@ -274,7 +292,7 @@ async def run_pipeline_stream(req: TruthCheckRequest):
         return events
 
     try:
-        async for output in app.astream(state):
+        async for output in app.astream(state, config=stream_config):
             for node_name, node_state in output.items():
                 current_stage = node_name
                 stream_logger.info(f"Stream yielded node: {node_name}")
@@ -331,3 +349,133 @@ async def run_pipeline_stream(req: TruthCheckRequest):
         "event": "complete",
         "data": final_response.model_dump()
     }, default=pydantic_encoder) + "\n"
+
+
+async def run_pipeline_stream_v2(
+    req: TruthCheckRequest,
+    *,
+    heartbeat_interval_seconds: float = 2.0,
+):
+    """
+    Streaming v2 wrapper.
+    - Emits `stream_open` immediately.
+    - Emits periodic `heartbeat` while waiting for upstream stage events.
+    - Preserves v1 payloads (`stage_complete`, `step_*`, `complete`, `error`).
+    """
+    interval = max(0.2, float(heartbeat_interval_seconds))
+    trace_id = str(uuid.uuid4())
+    stream_logger = logging.getLogger("uvicorn.error")
+
+    queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+    producer_done = asyncio.Event()
+    current_stage = "initializing"
+    last_activity_monotonic = time.monotonic()
+    saw_terminal_event = False
+
+    async def _producer() -> None:
+        nonlocal current_stage
+        nonlocal last_activity_monotonic
+        try:
+            async for chunk in run_pipeline_stream(req):
+                try:
+                    payload = json.loads(chunk)
+                    if not isinstance(payload, dict):
+                        continue
+                except Exception:
+                    await queue.put(
+                        {
+                            "event": "error",
+                            "trace_id": trace_id,
+                            "ts": _iso_now(),
+                            "data": {
+                                "code": "STREAM_PARSE_ERROR",
+                                "stage": current_stage,
+                                "message": "Malformed upstream stream payload",
+                            },
+                        }
+                    )
+                    continue
+
+                payload.setdefault("trace_id", trace_id)
+                payload.setdefault("ts", _iso_now())
+
+                event_name = str(payload.get("event", "")).lower()
+                stage = payload.get("stage")
+                if isinstance(stage, str) and stage:
+                    current_stage = stage
+
+                if event_name in {"step_started", "step_completed", "stage_complete", "complete", "error"}:
+                    last_activity_monotonic = time.monotonic()
+
+                await queue.put(payload)
+        except Exception as exc:
+            stream_logger.exception("Stream v2 producer failed")
+            await queue.put(
+                {
+                    "event": "error",
+                    "trace_id": trace_id,
+                    "ts": _iso_now(),
+                    "data": {
+                        "code": "PIPELINE_ERROR",
+                        "stage": current_stage,
+                        "message": str(exc),
+                        "display_message": "분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                    },
+                }
+            )
+        finally:
+            producer_done.set()
+
+    producer_task = asyncio.create_task(_producer())
+
+    try:
+        yield json.dumps(
+            {
+                "event": "stream_open",
+                "trace_id": trace_id,
+                "ts": _iso_now(),
+            }
+        ) + "\n"
+
+        while True:
+            if producer_done.is_set() and queue.empty():
+                break
+
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=interval)
+                event_name = str(payload.get("event", "")).lower()
+                if event_name in {"complete", "error"}:
+                    saw_terminal_event = True
+                yield json.dumps(payload) + "\n"
+            except asyncio.TimeoutError:
+                idle_ms = int((time.monotonic() - last_activity_monotonic) * 1000)
+                yield json.dumps(
+                    {
+                        "event": "heartbeat",
+                        "trace_id": trace_id,
+                        "current_stage": current_stage,
+                        "idle_ms": idle_ms,
+                        "ts": _iso_now(),
+                    }
+                ) + "\n"
+        if not saw_terminal_event:
+            yield json.dumps(
+                {
+                    "event": "error",
+                    "trace_id": trace_id,
+                    "ts": _iso_now(),
+                    "data": {
+                        "code": "STREAM_TERMINATED",
+                        "stage": current_stage,
+                        "message": "Stream ended before terminal event",
+                        "display_message": "분석 스트림이 비정상 종료되었습니다.",
+                    },
+                }
+            ) + "\n"
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            try:
+                await producer_task
+            except asyncio.CancelledError:
+                pass
