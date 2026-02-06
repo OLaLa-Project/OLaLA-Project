@@ -5,7 +5,7 @@ Common Schema Types.
 """
 
 from enum import Enum
-from typing import Literal
+from typing import Literal, Optional, Dict, Any
 
 
 class SourceType(str, Enum):
@@ -122,7 +122,19 @@ class SearchQuery(BaseModel):
     """
     text: str = Field(..., description="검색어")
     type: SearchQueryType = Field(default=SearchQueryType.DIRECT, description="쿼리 타입")
+    search_mode: Optional[str] = Field(
+        default=None,
+        description="검색 모드 (auto|lexical|vector|fts 등)",
+    )
+    meta: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="정규화/디버그 힌트",
+    )
     
     def to_dict(self) -> dict:
-        return {"text": self.text, "type": self.type.value}
-
+        data = {"text": self.text, "type": self.type.value}
+        if self.search_mode:
+            data["search_mode"] = self.search_mode
+        if self.meta:
+            data["meta"] = self.meta
+        return data

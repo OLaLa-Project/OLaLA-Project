@@ -8,6 +8,7 @@ import 'help/widgets/tutorial_content.dart';
 import 'widgets/input_type_selector.dart';
 import 'widgets/input_field.dart';
 import 'widgets/verify_start_button.dart';
+import 'widgets/issue_banner.dart';
 import 'help/help_screen.dart';
 import '../coach/coach_controller.dart';
 import '../coach/widgets/coach_overlay.dart';
@@ -229,6 +230,9 @@ class _InputSection extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       child: Column(
         children: [
+          // 오늘의 이슈 배너
+          const IssueBanner(),
+          const SizedBox(height: 12),
           Obx(() => InputTypeSelector(
                 containerKey: controller.selectorKey,
                 selected: controller.mode.value,

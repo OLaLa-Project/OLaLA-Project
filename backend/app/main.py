@@ -1,55 +1,51 @@
 import os
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
+from app.api.rag import router as rag_router
+from app.api.wiki import router as wiki_router
 from app.api.dashboard import router as dashboard_router
 from app.api.truth_check import router as truth_router
-from app.api.wiki import router as wiki_router
-from app.db.init_db import init_db
-from app.api.rag import router as rag_router
+from app.api.issue_chat import router as issue_chat_router
+from app.db.session import init_db
 
-app = FastAPI(title="OLaLA MVP")
-cors_origins_env = os.getenv("CORS_ORIGINS", "")
-cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
-if not cors_origins:
-    cors_origins = [
-        "http://localhost:5175",
-        "http://127.0.0.1:5175",
-        "http://192.168.0.4:5175",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="OLaLA Backend",
+    description="Fact Checking Pipeline API",
+    version="1.0.0"
+)
+
+# CORS 설정
+origins = [
+    "http://localhost:3000",  # React
+    "http://localhost:8080",  # Flutter Web
+    "http://localhost",       # Nginx/Production
+    "*"                       # Development convenience
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],  # Allow browser to read all response headers for streaming
 )
 
-from fastapi.exceptions import RequestValidationError
-from fastapi.requests import Request
-from fastapi.responses import JSONResponse
-import logging
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logging.error(f"Validation Error: {exc.errors()}")
-    logging.error(f"Body: {exc.body}")
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": str(exc.body)},
-    )
-
-app.include_router(health_router)
-app.include_router(rag_router)
-app.include_router(wiki_router)
-app.include_router(dashboard_router)
-app.include_router(truth_router)
+# 라우터 등록
+app.include_router(health_router, prefix="/api/health", tags=["health"])
+app.include_router(rag_router, prefix="/api/rag", tags=["rag"])
+app.include_router(wiki_router, prefix="/api/wiki", tags=["wiki"])
+app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(truth_router, prefix="/api/truth", tags=["truth"])
+app.include_router(issue_chat_router) # issue_chat_router file defines its own prefix
 
 @app.on_event("startup")
 def on_startup() -> None:
+    logger.info("Initializing Database...")
     init_db()
+    logger.info("Database Initialized.")

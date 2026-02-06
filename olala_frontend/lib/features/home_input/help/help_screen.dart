@@ -270,29 +270,106 @@ class _CloseButton extends StatelessWidget {
   }
 }
 
+/// ========================================
+/// 🎨 가이드 박스 크기 설정 (여기서 각 가이드 박스 크기를 개별 조정하세요!)
+/// ========================================
 class _LabelMetrics {
-  static const double defaultHeight = 68;
-  static const double _minBottomNavWidth = 85;
+  // ========================================
+  // 📏 각 가이드 박스별 개별 크기 설정
+  // ========================================
+
+  // 설정 버튼 가이드 박스
+  static const double widthSettings = 240.0;
+  static const double heightSettings = 68.0;
+
+  // 입력 방식 선택 가이드 박스
+  static const double widthInputTypeSelector = 240.0;
+  static const double heightInputTypeSelector = 68.0;
+
+  // 입력창 가이드 박스
+  static const double widthInputField = 240.0;
+  static const double heightInputField = 68.0;
+
+  // 검증 시작 버튼 가이드 박스
+  static const double widthVerifyStartButton = 240.0;
+  static const double heightVerifyStartButton = 68.0;
+
+  // 히스토리 가이드 박스 (bottomnav)
+  static const double widthNavHistory = 120.0;
+  static const double heightNavHistory = 68.0;
+
+  // 검증 가이드 박스 (bottomnav)
+  static const double widthNavVerify = 130.0;
+  static const double heightNavVerify = 68.0;
+
+  // 북마크 가이드 박스 (bottomnav)
+  static const double widthNavBookmark = 100.0;
+  static const double heightNavBookmark = 68.0;
+
+  // ========================================
+  // 📍 기본값 (위에서 개별 설정되지 않은 경우)
+  // ========================================
+  static const double defaultWidth = 100.0;
+  static const double defaultHeight = 68.0;
+  static const double _minBottomNavWidth = 85.0;
+
+  // ========================================
+  // 📍 내부 메서드 (자동 계산)
+  // ========================================
+
+  /// 타겟별 너비 반환
+  static double widthForTarget(GuideTarget target) {
+    switch (target) {
+      case GuideTarget.settings:
+        return widthSettings;
+      case GuideTarget.inputTypeSelector:
+        return widthInputTypeSelector;
+      case GuideTarget.inputField:
+        return widthInputField;
+      case GuideTarget.verifyStartButton:
+        return widthVerifyStartButton;
+      case GuideTarget.navHistory:
+        return widthNavHistory;
+      case GuideTarget.navVerify:
+        return widthNavVerify;
+      case GuideTarget.navBookmark:
+        return widthNavBookmark;
+    }
+  }
+
+  /// 타겟별 높이 반환
+  static double heightForTarget(GuideTarget target) {
+    switch (target) {
+      case GuideTarget.settings:
+        return heightSettings;
+      case GuideTarget.inputTypeSelector:
+        return heightInputTypeSelector;
+      case GuideTarget.inputField:
+        return heightInputField;
+      case GuideTarget.verifyStartButton:
+        return heightVerifyStartButton;
+      case GuideTarget.navHistory:
+        return heightNavHistory;
+      case GuideTarget.navVerify:
+        return heightNavVerify;
+      case GuideTarget.navBookmark:
+        return heightNavBookmark;
+    }
+  }
 
   static double maxWidthFor(GuideTarget target, double screenWidth) {
-    final base = _baseWidth(screenWidth);
+    final targetWidth = widthForTarget(target);
+
+    // BottomNav는 화면 크기에 따라 제한
     if (_bottomNavTargets.contains(target)) {
       final padding = screenWidth > 600 ? 16.0 : 12.0;
       const columnGap = 12.0;
       final twoColumnMax = (screenWidth - padding * 2 - columnGap) / 2;
-      final capped = math.min(base, twoColumnMax);
+      final capped = math.min(targetWidth, twoColumnMax);
       return capped < _minBottomNavWidth ? _minBottomNavWidth : capped;
     }
-    return base;
-  }
 
-  static double _baseWidth(double screenWidth) {
-    if (screenWidth > 600) {
-      return 110.0; // 태블릿
-    } else if (screenWidth < 360) {
-      return screenWidth * 0.35; // 작은 폰 (가독성 중심)
-    }
-    return 85.0; // 모바일 기본 크기
+    return targetWidth;
   }
 
   static EdgeInsets paddingFor(double screenWidth) {
@@ -312,7 +389,7 @@ class _LabelMetrics {
     if (knownSize != null) {
       return knownSize;
     }
-    return Size(maxWidthFor(target, screenWidth), defaultHeight);
+    return Size(maxWidthFor(target, screenWidth), heightForTarget(target));
   }
 }
 
@@ -421,6 +498,7 @@ class _CoachLabelState extends State<_CoachLabel>
           screenSize: widget.screenSize,
           headerHeight: widget.headerHeight,
           footerHeight: widget.footerHeight,
+          target: widget.target,
         );
 
     return Positioned(
@@ -494,53 +572,60 @@ class _LabelGeometry {
     required Size screenSize,
     required double headerHeight,
     required double footerHeight,
+    required GuideTarget target,
   }) {
-    // 반응형 간격 (라벨 간격 증가로 겹침 방지)
-    final gap = screenSize.width > 600 ? 30.0 : 26.0;
-
     double x;
     double y;
 
+    // placement에 따라 기본 위치 결정 (gap 없이)
     switch (placement) {
       case LabelPlacement.topLeft:
         x = rect.left;
-        y = rect.top - gap - labelSize.height;
+        y = rect.top - labelSize.height;
         break;
       case LabelPlacement.topRight:
         x = rect.right - labelSize.width;
-        y = rect.top - gap - labelSize.height;
+        y = rect.top - labelSize.height;
         break;
       case LabelPlacement.bottomLeft:
         x = rect.left;
-        y = rect.bottom + gap;
+        y = rect.bottom;
         break;
       case LabelPlacement.bottomRight:
         x = rect.right - labelSize.width;
-        y = rect.bottom + gap;
+        y = rect.bottom;
         break;
       case LabelPlacement.left:
-        x = rect.left - gap - labelSize.width;
+        x = rect.left - labelSize.width;
         y = rect.top;
         break;
       case LabelPlacement.right:
-        x = rect.right + gap;
+        x = rect.right;
         y = rect.top;
         break;
       case LabelPlacement.top:
         x = rect.center.dx - labelSize.width / 2;
-        y = rect.top - gap - labelSize.height;
+        y = rect.top - labelSize.height;
         break;
       case LabelPlacement.bottom:
         x = rect.center.dx - labelSize.width / 2;
-        y = rect.bottom + gap;
+        y = rect.bottom;
         break;
     }
 
+    // offset으로 위치 조정 (gap 대신 offset만 사용)
+    final offsetX = _LabelPositionMetrics.offsetXForTarget(target);
+    final offsetY = _LabelPositionMetrics.offsetYForTarget(target);
+    x += offsetX;
+    y += offsetY;
+
     // 화면 경계 내로 제한 (충돌 방지)
-    final padding = screenSize.width > 600 ? 16.0 : 12.0;
+    final padding = screenSize.width > 600
+        ? _LabelPositionMetrics.paddingTablet
+        : _LabelPositionMetrics.paddingMobile;
     final minX = padding;
     final maxX = screenSize.width - padding - labelSize.width;
-    final minY = headerHeight;
+    final minY = headerHeight + _LabelPositionMetrics.minYOffset;
     final maxY = screenSize.height - footerHeight - labelSize.height;
 
     x = x.clamp(minX, maxX.clamp(minX, screenSize.width - padding));
@@ -592,9 +677,9 @@ class _LabelGeometry {
 }
 
 class _LabelLayout {
-  static const double _collisionGap = 10;
-  static const double _rowGap = 12;
-  static const double _gapToNav = 14;
+  // 위치 조정 상수들은 _LabelPositionMetrics에서 관리됨
+  static double get _collisionGap => _LabelPositionMetrics.collisionGap;
+  static double get _rowGap => _LabelPositionMetrics.rowGap;
 
   static Map<GuideTarget, Offset> resolvePositions({
     required List<GuideItem> items,
@@ -623,6 +708,7 @@ class _LabelLayout {
         screenSize: screenSize,
         headerHeight: headerHeight,
         footerHeight: footerHeight,
+        target: item.target,
       );
     }
 
@@ -687,7 +773,9 @@ class _LabelLayout {
   }) {
     if (bottomItems.isEmpty) return {};
 
-    final padding = screenSize.width > 600 ? 16.0 : 12.0;
+    final padding = screenSize.width > 600
+        ? _LabelPositionMetrics.paddingTablet
+        : _LabelPositionMetrics.paddingMobile;
     final bottomRects = <Rect>[];
     for (final item in bottomItems) {
       final rect = rects[item.target];
@@ -710,7 +798,7 @@ class _LabelLayout {
     final row1Height = verifySize?.height ?? row2Height;
 
     final maxRow1Y = screenSize.height - footerHeight - row1Height;
-    var row1Y = navTop - _gapToNav - row1Height;
+    var row1Y = navTop - row1Height;
     row1Y = row1Y.clamp(headerHeight, maxRow1Y).toDouble();
 
     var row2Y = row1Y - _rowGap - row2Height;
@@ -726,20 +814,29 @@ class _LabelLayout {
 
     final positions = <GuideTarget, Offset>{};
     if (historySize != null) {
-      final x = padding;
-      positions[GuideTarget.navHistory] = Offset(x, row2Y);
+      var x = padding;
+      var y = row2Y;
+      x += _LabelPositionMetrics.offsetXForTarget(GuideTarget.navHistory);
+      y += _LabelPositionMetrics.offsetYForTarget(GuideTarget.navHistory);
+      positions[GuideTarget.navHistory] = Offset(x, y);
     }
     if (bookmarkSize != null) {
-      final x = screenSize.width - padding - bookmarkSize.width;
-      positions[GuideTarget.navBookmark] = Offset(x, row2Y);
+      var x = screenSize.width - padding - bookmarkSize.width;
+      var y = row2Y;
+      x += _LabelPositionMetrics.offsetXForTarget(GuideTarget.navBookmark);
+      y += _LabelPositionMetrics.offsetYForTarget(GuideTarget.navBookmark);
+      positions[GuideTarget.navBookmark] = Offset(x, y);
     }
     if (verifySize != null) {
-      final x = (screenSize.width - verifySize.width) / 2;
+      var x = (screenSize.width - verifySize.width) / 2;
+      var y = row1Y;
+      x += _LabelPositionMetrics.offsetXForTarget(GuideTarget.navVerify);
+      y += _LabelPositionMetrics.offsetYForTarget(GuideTarget.navVerify);
       positions[GuideTarget.navVerify] = Offset(
         x
             .clamp(padding, screenSize.width - padding - verifySize.width)
             .toDouble(),
-        row1Y,
+        y,
       );
     }
 
@@ -839,6 +936,126 @@ class _LabelLayout {
   }
 }
 
+/// 가이드 박스 위치 조정 상수 (여기서 각 가이드 박스 위치를 개별 조정하세요!)
+class _LabelPositionMetrics {
+  // ========================================
+  // 📍 개별 가이드 박스 위치 조정 (offsetX, offsetY만 사용)
+  // offsetX: 가로 위치 (양수 → 오른쪽 / 음수 → 왼쪽)
+  // offsetY: 세로 위치 (양수 → 아래 / 음수 → 위)
+  //
+  // 💡 팁: placement(topLeft, bottom 등)에 따라 기본 위치가 결정되고,
+  //        offset으로 미세 조정합니다.
+  // ========================================
+
+  // 설정 버튼 가이드 박스
+  static const double offsetXSettings = -260.0;
+  static const double offsetYSettings = -40.0; // gap(10) 제거됨, 위치 재조정
+
+  // 입력 방식 선택 가이드 박스
+  static const double offsetXInputTypeSelector = 80.0;
+  static const double offsetYInputTypeSelector =
+      -120.0; // gap(28) → offset으로 변환
+
+  // 입력창 가이드 박스
+  static const double offsetXInputField = 10.0;
+  static const double offsetYInputField = 130.0;
+
+  // 검증 시작 버튼 가이드 박스
+  static const double offsetXVerifyStartButton = -50.0;
+  static const double offsetYVerifyStartButton = -10.0; // gap(26) → offset으로 변환
+
+  // 히스토리 가이드 박스 (bottomnav)
+  static const double offsetXNavHistory = 0.0;
+  static const double offsetYNavHistory = 100.0; // gap(14) → offset으로 변환
+
+  // 검증 가이드 박스 (bottomnav)
+  static const double offsetXNavVerify = 7.5;
+  static const double offsetYNavVerify = 17.0; // gap(20) → offset으로 변환
+
+  // 북마크 가이드 박스 (bottomnav)
+  static const double offsetXNavBookmark = -5.0;
+  static const double offsetYNavBookmark =
+      100.0; // gap(28) 제거, offset(100) - 28 = 72
+
+  // ========================================
+  // 📍 BottomNav 전용 설정
+  // ========================================
+
+  // 검색 라벨과 히스토리/북마크 라벨 간 거리
+  static const double rowGap = 12.0;
+
+  // 가이드 박스끼리 겹치지 않게 하는 최소 간격
+  static const double collisionGap = 10.0;
+
+  // ========================================
+  // 📍 화면 가장자리 여백 및 경계 제한
+  // ========================================
+
+  static const double paddingMobile = 12.0;
+  static const double paddingTablet = 16.0;
+
+  // 가이드 박스가 올라갈 수 있는 최소 Y 좌표 여유
+  // 0.0 = headerHeight부터 시작 (상단바 침범 불가)
+  // 음수 = 상단바 영역까지 올라갈 수 있음 (예: -50.0 = 상단바 위 50px까지)
+  static const double minYOffset = -100.0;
+
+  // ========================================
+  // 📍 타겟별 값 반환 (내부 사용)
+  // ========================================
+
+  static double offsetXForTarget(GuideTarget target) {
+    switch (target) {
+      case GuideTarget.settings:
+        return offsetXSettings;
+      case GuideTarget.inputTypeSelector:
+        return offsetXInputTypeSelector;
+      case GuideTarget.inputField:
+        return offsetXInputField;
+      case GuideTarget.verifyStartButton:
+        return offsetXVerifyStartButton;
+      case GuideTarget.navHistory:
+        return offsetXNavHistory;
+      case GuideTarget.navVerify:
+        return offsetXNavVerify;
+      case GuideTarget.navBookmark:
+        return offsetXNavBookmark;
+    }
+  }
+
+  static double offsetYForTarget(GuideTarget target) {
+    switch (target) {
+      case GuideTarget.settings:
+        return offsetYSettings;
+      case GuideTarget.inputTypeSelector:
+        return offsetYInputTypeSelector;
+      case GuideTarget.inputField:
+        return offsetYInputField;
+      case GuideTarget.verifyStartButton:
+        return offsetYVerifyStartButton;
+      case GuideTarget.navHistory:
+        return offsetYNavHistory;
+      case GuideTarget.navVerify:
+        return offsetYNavVerify;
+      case GuideTarget.navBookmark:
+        return offsetYNavBookmark;
+    }
+  }
+}
+
+/// 하이라이트 영역 확장 크기 상수
+class _HighlightMetrics {
+  // 일반 UI 요소
+  static const double generalHorizontal = 6.0;
+  static const double generalVertical = 6.0;
+  static const Radius generalRadius = Radius.circular(24);
+
+  // Bottom Navigation 전용 (아이콘 + 라벨 영역)
+  static const double bottomNavHorizontal = 16.0;
+  static const double bottomNavTop = 1.0; // 아이콘 위쪽 최소 여백
+  static const double bottomNavBottom = 19.0; // 라벨까지 포함
+  static const Radius bottomNavRadius = Radius.circular(4);
+}
+
 /// 코치 페인터 - 배경, 하이라이트, 연결선
 class _CoachPainter extends CustomPainter {
   final List<GuideItem> items;
@@ -861,18 +1078,25 @@ class _CoachPainter extends CustomPainter {
     required this.safeAreaBottom,
   });
 
+  /// 주어진 타겟이 bottom navigation 항목인지 확인
+  bool _isBottomNavTarget(GuideTarget target) {
+    return target == GuideTarget.navHistory ||
+        target == GuideTarget.navVerify ||
+        target == GuideTarget.navBookmark;
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     // 배경 스크림
     final scrimColor = isDark
-        ? const Color(0xFF2A2A2A).withOpacity( 0.78)
-        : const Color(0xFFCCCCCC).withOpacity( 0.78);
+        ? const Color(0xFF2A2A2A).withOpacity(0.78)
+        : const Color(0xFFCCCCCC).withOpacity(0.78);
 
     // Paint 객체들
     final dashPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.4
-      ..color = _HelpBrand.blueLight.withOpacity( 0.95)
+      ..color = _HelpBrand.blueLight.withOpacity(0.95)
       ..strokeCap = StrokeCap.round;
 
     final Path full = Path()..addRect(Offset.zero & size);
@@ -884,18 +1108,21 @@ class _CoachPainter extends CustomPainter {
       if (rect == null) continue;
 
       // 하이라이트 영역 (bottomnav는 뭉뚝한 사각형)
-      final isBottomNav =
-          item.target == GuideTarget.navHistory ||
-          item.target == GuideTarget.navVerify ||
-          item.target == GuideTarget.navBookmark;
+      final isBottomNav = _isBottomNavTarget(item.target);
 
       final radius = isBottomNav
-          ? const Radius.circular(4)
-          : const Radius.circular(24);
+          ? _HighlightMetrics.bottomNavRadius
+          : _HighlightMetrics.generalRadius;
 
-      final inflateValue = isBottomNav ? 16.0 : 6.0;
-      final topInflate = isBottomNav ? 0.0 : 6.0; // bottomnav는 위쪽 확장 없음
-      final bottomInflate = isBottomNav ? 7.0 : 6.0;
+      final inflateValue = isBottomNav
+          ? _HighlightMetrics.bottomNavHorizontal
+          : _HighlightMetrics.generalHorizontal;
+      final topInflate = isBottomNav
+          ? _HighlightMetrics.bottomNavTop
+          : _HighlightMetrics.generalVertical;
+      final bottomInflate = isBottomNav
+          ? _HighlightMetrics.bottomNavBottom
+          : _HighlightMetrics.generalVertical;
 
       final highlight = RRect.fromRectAndRadius(
         Rect.fromLTRB(
@@ -919,25 +1146,24 @@ class _CoachPainter extends CustomPainter {
       if (rect == null) continue;
 
       // bottomnav는 뭉뚝한 사각형
-      final isBottomNav =
-          item.target == GuideTarget.navHistory ||
-          item.target == GuideTarget.navVerify ||
-          item.target == GuideTarget.navBookmark;
+      final isBottomNav = _isBottomNavTarget(item.target);
 
-      final hideConnector =
-          isBottomNav ||
-          item.target == GuideTarget.settings ||
-          item.target == GuideTarget.verifyStartButton ||
-          item.target == GuideTarget.inputField ||
-          item.target == GuideTarget.inputTypeSelector;
+      // 연결선 완전히 제거
+      final hideConnector = true;
 
       final radius = isBottomNav
-          ? const Radius.circular(4)
-          : const Radius.circular(24);
+          ? _HighlightMetrics.bottomNavRadius
+          : _HighlightMetrics.generalRadius;
 
-      final inflateValue = isBottomNav ? 16.0 : 6.0;
-      final topInflate = isBottomNav ? 0.0 : 6.0; // bottomnav는 위쪽 확장 없음
-      final bottomInflate = isBottomNav ? 7.0 : 6.0;
+      final inflateValue = isBottomNav
+          ? _HighlightMetrics.bottomNavHorizontal
+          : _HighlightMetrics.generalHorizontal;
+      final topInflate = isBottomNav
+          ? _HighlightMetrics.bottomNavTop
+          : _HighlightMetrics.generalVertical;
+      final bottomInflate = isBottomNav
+          ? _HighlightMetrics.bottomNavBottom
+          : _HighlightMetrics.generalVertical;
 
       final highlight = RRect.fromRectAndRadius(
         Rect.fromLTRB(
@@ -968,6 +1194,7 @@ class _CoachPainter extends CustomPainter {
               screenSize: size,
               headerHeight: headerHeight,
               footerHeight: footerHeight,
+              target: item.target,
             );
         final labelAnchor = _LabelGeometry.labelAnchor(
           labelTopLeft: labelTopLeft,
@@ -977,30 +1204,12 @@ class _CoachPainter extends CustomPainter {
 
         final targetAnchor = _targetAnchor(rect, item.placement);
 
+        // 가이드 박스 중앙에서 하이라이트로 점선 그리기 (화살표 없음)
         final path = Path();
-        path.moveTo(targetAnchor.dx, targetAnchor.dy);
-
-        final mid = Offset(
-          (targetAnchor.dx + labelAnchor.dx) / 2,
-          (targetAnchor.dy + labelAnchor.dy) / 2,
-        );
-        final ctrl = _controlPoint(mid, targetAnchor, labelAnchor);
-
-        path.quadraticBezierTo(
-          ctrl.dx,
-          ctrl.dy,
-          labelAnchor.dx,
-          labelAnchor.dy,
-        );
+        path.moveTo(labelAnchor.dx, labelAnchor.dy); // 가이드 박스 중앙에서 시작
+        path.lineTo(targetAnchor.dx, targetAnchor.dy); // 하이라이트로 직선 연결
 
         _drawDashedPath(canvas, path, dashPaint, dash: 6, gap: 7);
-
-        // 시작점 표시
-        canvas.drawCircle(
-          targetAnchor,
-          4.0,
-          Paint()..color = _HelpBrand.blueLight.withOpacity( 0.95),
-        );
       }
     }
   }
@@ -1020,26 +1229,6 @@ class _CoachPainter extends CustomPainter {
         return Offset(r.left - offset, r.center.dy);
       case LabelPlacement.right:
         return Offset(r.right + offset, r.center.dy);
-    }
-  }
-
-  Offset _controlPoint(Offset mid, Offset a, Offset b) {
-    final dx = b.dx - a.dx;
-    final dy = b.dy - a.dy;
-
-    // 곡선 강도
-    const curveFactor = 50.0;
-
-    if (dx.abs() > dy.abs()) {
-      return Offset(
-        mid.dx,
-        mid.dy - curveFactor * (dy.sign == 0 ? 1 : dy.sign),
-      );
-    } else {
-      return Offset(
-        mid.dx + curveFactor * (dx.sign == 0 ? 1 : dx.sign),
-        mid.dy,
-      );
     }
   }
 

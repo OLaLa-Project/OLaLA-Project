@@ -1,33 +1,8 @@
-﻿"""
-Stage 9 - Judge (LLM 기반 품질 평가 + 사용자 친화적 최종 결과 생성)
+"""
+Stage 9 - Judge (LLM 기반 최종 판정 + 사용자 친화적 결과 생성)
 
-LLM을 사용하여 draft_verdict의 품질을 평가하고,
-사용자가 이해하기 쉬운 형태의 최종 결과물을 생성합니다.
-
-역할 (2단계):
-1. 품질 평가 (Quality Evaluation)
-   - Hallucination 검사: reasoning_bullet이 citations로 뒷받침되는지
-   - Grounding Precision 검사: quote가 주장과 관련있는지
-   - Consistency 검사: stance가 reasoning과 일치하는지
-   - Policy 검사: PII 노출, 위험 콘텐츠 여부
-
-2. 사용자 친화적 결과 생성 (User-Friendly Output)
-   - "XX% 확률로 사실입니다" 형태의 헤드라인
-   - 핵심 근거와 출처 정리
-   - 핵심 근거와 출처 정리
-
-Input state keys:
-    - trace_id: str
-    - claim_text: str (검증 대상 주장)
-    - draft_verdict: dict (Stage 8 결과)
-    - quality_score: int (Stage 8 품질 점수)
-    - evidence_topk: list[dict] (Stage 5 증거/출처)
-    - language: str
-
-Output state keys:
-    - final_verdict: dict (PRD 스키마 + 품질 평가 + 사용자 친화적 필드)
-    - user_result: dict (클라이언트 표시용 결과)
-    - risk_flags: list[str]
+Stage6/7의 상반된 결과를 직접 비교하고,
+별도 retrieval 근거를 함께 검토해 TRUE/FALSE 판결을 내립니다.
 """
 
 import json
@@ -41,6 +16,8 @@ from pathlib import Path
 
 import requests
 
+from app.db.session import SessionLocal
+from app.services.rag_usecase import retrieve_wiki_context
 from app.stages._shared.guardrails import (
     parse_judge_json_with_retry,
     validate_judge_output,
@@ -53,13 +30,10 @@ from app.stages._shared.gateway_runtime import (
     RetryPolicy,
     RetryConfig,
     GatewayError,
-    GatewayTimeoutError,
     GatewayValidationError,
 )
 
 logger = logging.getLogger(__name__)
-
-QUALITY_SCORE_CUTOFF = 65
 
 # Judge 프롬프트 경로 (Stage 단일 테스트)
 PROMPT_FILE = Path(__file__).parent / "prompt_judge.txt"
@@ -137,14 +111,9 @@ def _call_llm(
     **kwargs,
 ) -> str:
     """LLM 호출 (Shared Client 사용)."""
-    # config 로드 (env에서) -> shared config로 변환이 필요하지만
-    # 단순히 shared.call_slm을 쓰거나, Judge 전용 설정을 shared client에 주입해야 함.
-    # 여기서는 간단히 Judge Config를 사용하여 SLMClient를 생성/호출합니다.
-    
     config = _get_llm_config()
     from app.stages._shared.slm_client import SLMClient, SLMConfig
-    
-    # Judge Config -> SLM Config Mapping
+
     slm_config = SLMConfig(
         base_url=config.base_url,
         api_key=config.api_key or "ollama",
@@ -153,186 +122,445 @@ def _call_llm(
         max_tokens=config.max_tokens,
         temperature=kwargs.get("temperature", config.temperature),
     )
-    
+
     client = SLMClient(slm_config)
     return client.chat_completion(system_prompt, user_prompt, temperature=slm_config.temperature)
 
+
+def _retrieve_judge_evidence(claim_text: str, search_mode: str) -> List[Dict[str, Any]]:
+    """
+    Judge 전용 retrieval.
+
+    Stage9가 Stage6/7 외의 근거를 직접 확인하도록 별도 검색을 수행한다.
+    """
+    if not (claim_text or "").strip():
+        return []
+
+    try:
+        with SessionLocal() as db:
+            pack = retrieve_wiki_context(
+                db=db,
+                question=claim_text,
+                top_k=5,
+                page_limit=5,
+                window=2,
+                embed_missing=False,
+                search_mode=search_mode or "auto",
+            )
+    except Exception as e:
+        logger.warning(f"Judge retrieval 실패: {e}")
+        return []
+
+    sources = []
+    for i, src in enumerate(pack.get("sources", []), start=1):
+        evid_id = f"judge_wiki_{i}"
+        sources.append(
+            {
+                "evid_id": evid_id,
+                "source_type": "WIKIPEDIA",
+                "title": src.get("title", ""),
+                "url": f"wiki://page/{src.get('page_id')}" if src.get("page_id") else "",
+                "snippet": src.get("snippet", ""),
+            }
+        )
+
+    return sources
+
+
+def _build_evidence_index(evidence_index: Dict[str, Any], retrieval_sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Stage8의 evidence_index와 retrieval 근거를 합친다."""
+    merged = dict(evidence_index or {})
+    for src in retrieval_sources:
+        evid_id = src.get("evid_id")
+        if evid_id and evid_id not in merged:
+            merged[evid_id] = {
+                "evid_id": evid_id,
+                "title": src.get("title", ""),
+                "url": src.get("url", ""),
+                "snippet": src.get("snippet", ""),
+                "source_type": src.get("source_type", "WIKIPEDIA"),
+            }
+    return merged
+
+
+def _build_citation_index(
+    support_pack: Dict[str, Any],
+    skeptic_pack: Dict[str, Any],
+    retrieval_sources: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """evid_id 기준으로 인용 정보를 통합한다."""
+    index: Dict[str, Dict[str, Any]] = {}
+
+    for cit in (support_pack.get("citations", []) or []) + (skeptic_pack.get("citations", []) or []):
+        evid_id = cit.get("evid_id")
+        if not evid_id:
+            continue
+        index[evid_id] = {
+            "evid_id": evid_id,
+            "title": cit.get("title", ""),
+            "url": cit.get("url", ""),
+            "quote": cit.get("quote", ""),
+        }
+
+    # retrieval은 quote 대신 snippet을 사용한다.
+    for src in retrieval_sources:
+        evid_id = src.get("evid_id")
+        if not evid_id:
+            continue
+        index.setdefault(
+            evid_id,
+            {
+                "evid_id": evid_id,
+                "title": src.get("title", ""),
+                "url": src.get("url", ""),
+                "quote": src.get("snippet", ""),
+            },
+        )
+
+    return index
+
+
 def _build_judge_user_prompt(
     claim_text: str,
-    draft_verdict: Dict[str, Any],
-    evidence_topk: List[Dict[str, Any]],
-    quality_score: int,
+    support_pack: Dict[str, Any],
+    skeptic_pack: Dict[str, Any],
+    evidence_index: Dict[str, Any],
+    retrieval_sources: List[Dict[str, Any]],
     language: str,
 ) -> str:
     """Judge 입력을 LLM user prompt로 구성."""
-    verdict_str = json.dumps(draft_verdict, ensure_ascii=False, indent=2)
-
-    evidence_lines = []
-    for ev in evidence_topk[:5]:
-        evid_id = ev.get("evid_id", "unknown")
-        title = ev.get("title", "")
-        snippet = (ev.get("snippet") or ev.get("content", ""))[:300]
-        evidence_lines.append(f"[{evid_id}] {title}")
-        evidence_lines.append(f"  내용: {snippet}")
-        evidence_lines.append("")
-    evidence_str = "\n".join(evidence_lines) if evidence_lines else "(증거 없음)"
+    support_str = json.dumps(support_pack, ensure_ascii=False, indent=2)
+    skeptic_str = json.dumps(skeptic_pack, ensure_ascii=False, indent=2)
+    evidence_str = json.dumps(evidence_index, ensure_ascii=False, indent=2)
+    retrieval_str = json.dumps(retrieval_sources, ensure_ascii=False, indent=2)
 
     return f"""## 검증 대상 주장
 {claim_text}
 
-## 이전 단계 판정 결과 (draft_verdict)
-{verdict_str}
+## Stage6 (지지) 결과
+{support_str}
 
-## 원본 증거 (evidence_topk)
+## Stage7 (회의) 결과
+{skeptic_str}
+
+## evidence_index (evid_id 기준 테이블)
 {evidence_str}
 
-## 품질 점수 (Stage 8)
-{quality_score}/100
+## retrieval_evidence (Judge 별도 검색)
+{retrieval_str}
 
 ## 요청
-위 정보를 바탕으로 최종 판정을 평가하고, 지정된 JSON 형식으로 결과를 출력하세요.
+위 정보를 바탕으로 최종 판결을 TRUE 또는 FALSE 중 하나로 결정하고,
+지정된 JSON 형식으로 결과를 출력하세요.
 언어: {language}
 """
 
 
 def _postprocess_judge_result(
     parsed: Dict[str, Any],
-    draft_verdict: Dict[str, Any],
-    evidence_topk: List[Dict[str, Any]],
-    quality_score: int,
+    support_pack: Dict[str, Any],
+    skeptic_pack: Dict[str, Any],
+    evidence_index: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Judge raw 결과를 서비스 스키마에 맞게 후처리."""
-    stance = draft_verdict.get("stance", "UNVERIFIED")
-    confidence = draft_verdict.get("confidence", 0.0)
-    citations_count = len(draft_verdict.get("citations", []))
-
-    evaluation = parsed.get("evaluation", {})
-    hallucination_count = evaluation.get("hallucination_count", 0)
-    grounding_score = evaluation.get("grounding_score", 1.0)
-    is_consistent = evaluation.get("is_consistent", True)
-    policy_violations = evaluation.get("policy_violations", [])
-
     verdict_korean_map = {
         "TRUE": "사실입니다",
         "FALSE": "거짓입니다",
-        "MIXED": "일부 사실입니다",
-        "UNVERIFIED": "확인이 어렵습니다",
     }
 
-    verdict_label = parsed.get("verdict_label", stance)
+    label = (parsed.get("verdict_label") or "").upper().strip()
+    support_cits = support_pack.get("citations", []) or []
+    skeptic_cits = skeptic_pack.get("citations", []) or []
 
-    if quality_score < QUALITY_SCORE_CUTOFF or citations_count == 0:
-        verdict_label = "UNVERIFIED"
-        confidence = 0.0
-    elif hallucination_count >= 2 or grounding_score < 0.5:
-        verdict_label = "UNVERIFIED"
-        confidence = max(0.0, confidence * 0.5)
-    elif not is_consistent:
-        confidence = max(0.0, confidence * 0.7)
+    if label not in {"TRUE", "FALSE"}:
+        # Stage9가 최종 판결을 맡으므로, 유효하지 않은 라벨은 근거량으로 강제 결정한다.
+        label = "TRUE" if len(support_cits) >= len(skeptic_cits) else "FALSE"
 
-    confidence_percent = parsed.get("confidence_percent", int(confidence * 100))
+    confidence_percent = parsed.get("confidence_percent")
+    if not isinstance(confidence_percent, (int, float)):
+        fallback_conf = support_pack.get("confidence", 0.0) if label == "TRUE" else skeptic_pack.get("confidence", 0.0)
+        confidence_percent = int(max(0.0, min(1.0, float(fallback_conf))) * 100)
 
+    selected_ids = parsed.get("selected_evidence_ids") or []
+    if not isinstance(selected_ids, list):
+        selected_ids = []
+    # evidence_index에 존재하는 ID만 허용
+    selected_ids = [eid for eid in selected_ids if eid in evidence_index]
+
+    if not selected_ids:
+        # LLM이 선택 ID를 주지 않은 경우, 선택된 라벨의 citations을 기본 근거로 사용한다.
+        base_cits = support_cits if label == "TRUE" else skeptic_cits
+        selected_ids = [c.get("evid_id") for c in base_cits if c.get("evid_id") in evidence_index]
+
+    evaluation = parsed.get("evaluation", {}) or {}
     risk_flags = list(parsed.get("risk_flags", []))
-    if quality_score < QUALITY_SCORE_CUTOFF:
-        if "QUALITY_GATE_FAILED" not in risk_flags:
-            risk_flags.append("QUALITY_GATE_FAILED")
-    if citations_count < 2 or grounding_score < 0.7:
-        if "LOW_EVIDENCE" not in risk_flags:
-            risk_flags.append("LOW_EVIDENCE")
-    if policy_violations:
-        if "POLICY_RISK" not in risk_flags:
-            risk_flags.append("POLICY_RISK")
 
-    evidence_summary = parsed.get("evidence_summary", [])
+    if len(selected_ids) < 2 and "LOW_EVIDENCE" not in risk_flags:
+        risk_flags.append("LOW_EVIDENCE")
+    if evaluation.get("hallucination_count", 0) >= 2 and "HALLUCINATION_DETECTED" not in risk_flags:
+        risk_flags.append("HALLUCINATION_DETECTED")
+    if evaluation.get("policy_violations") and "POLICY_RISK" not in risk_flags:
+        risk_flags.append("POLICY_RISK")
+    if confidence_percent < 50 and "LOW_CONFIDENCE" not in risk_flags:
+        risk_flags.append("LOW_CONFIDENCE")
+
+    evidence_summary = parsed.get("evidence_summary")
     if not evidence_summary:
-        evidence_summary = _build_evidence_summary(draft_verdict, evidence_topk)
+        evidence_summary = _build_evidence_summary(selected_ids, evidence_index)
 
     return {
         "evaluation": {
-            "hallucination_count": hallucination_count,
-            "grounding_score": grounding_score,
-            "is_consistent": is_consistent,
-            "policy_violations": policy_violations,
+            "hallucination_count": evaluation.get("hallucination_count", 0),
+            "grounding_score": evaluation.get("grounding_score", 1.0),
+            "is_consistent": evaluation.get("is_consistent", True),
+            "policy_violations": evaluation.get("policy_violations", []),
         },
-        "verdict_label": verdict_label,
-        "verdict_korean": parsed.get(
-            "verdict_korean",
-            verdict_korean_map.get(verdict_label, "확인이 어렵습니다"),
-        ),
-        "confidence_percent": confidence_percent,
+        "verdict_label": label,
+        "verdict_korean": parsed.get("verdict_korean", verdict_korean_map.get(label, "확인이 어렵습니다")),
+        "confidence_percent": int(confidence_percent),
         "headline": parsed.get(
             "headline",
-            f"이 주장은 {confidence_percent}% 확률로 {verdict_korean_map.get(verdict_label, '확인이 어렵습니다')}",
+            f"이 주장은 {int(confidence_percent)}% 확률로 {verdict_korean_map.get(label, '확인이 어렵습니다')}",
         ),
         "explanation": parsed.get("explanation", ""),
         "evidence_summary": evidence_summary,
-        "cautions": parsed.get("cautions", draft_verdict.get("weak_points", [])),
+        "cautions": parsed.get("cautions", []),
         "recommendation": parsed.get("recommendation", ""),
         "risk_flags": risk_flags,
-        "_quality_score": quality_score,
-        "_original_stance": stance,
-        "_original_confidence": confidence,
+        "selected_evidence_ids": selected_ids,
     }
 
 
 def _build_evidence_summary(
-    draft_verdict: Dict[str, Any],
-    evidence_topk: List[Dict[str, Any]],
+    selected_ids: List[str],
+    evidence_index: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    # evidence_summary 생성
-    evidence_map = {ev.get("evid_id", ""): ev for ev in evidence_topk}
-    citations = draft_verdict.get("citations", [])
-    reasoning = draft_verdict.get("reasoning_bullets", [])
-
+    """선택된 evid_id 기반으로 evidence_summary 구성."""
     summary = []
-    for i, cit in enumerate(citations[:3]):
-        evid_id = cit.get("evid_id", "")
-        source_ev = evidence_map.get(evid_id, {})
-
-        point = ""
-        for r in reasoning:
-            if evid_id in r or (i == 0 and not point):
-                point = r.replace("[지지]", "").replace("[반박]", "").strip()
-                break
-
-        if not point and cit.get("quote"):
-            point = cit.get("quote", "")[:100]
-
-        summary.append({
-            "point": point or f"증거 {i+1}",
-            "source_title": source_ev.get("title", cit.get("title", "")),
-            "source_url": source_ev.get("url", cit.get("url", "")),
-        })
-
+    for evid_id in selected_ids[:3]:
+        ev = evidence_index.get(evid_id, {})
+        summary.append(
+            {
+                "point": (ev.get("snippet", "") or "")[:100],
+                "source_title": ev.get("title", ""),
+                "source_url": ev.get("url", ""),
+            }
+        )
     return summary
+
+
+def _build_final_verdict(
+    judge_result: Dict[str, Any],
+    evidence_index: Dict[str, Any],
+    citation_index: Dict[str, Dict[str, Any]],
+    trace_id: str,
+) -> Dict[str, Any]:
+    """PRD 스키마 + 사용자 친화적 필드를 포함한 최종 verdict."""
+    selected_ids = judge_result.get("selected_evidence_ids", [])
+    formatted_citations = _format_citations(selected_ids, evidence_index, citation_index)
+
+    llm_config = _get_llm_config()
+
+    return {
+        "analysis_id": trace_id,
+        "label": judge_result.get("verdict_label", "FALSE"),
+        "confidence": judge_result.get("confidence_percent", 0) / 100.0,
+        "summary": judge_result.get("headline", ""),
+        "rationale": [ev.get("point", "") for ev in judge_result.get("evidence_summary", [])],
+        "citations": formatted_citations,
+        "counter_evidence": [],
+        "limitations": judge_result.get("cautions", []),
+        "recommended_next_steps": [judge_result.get("recommendation", "")] if judge_result.get("recommendation") else [],
+        "risk_flags": judge_result.get("risk_flags", []),
+        "model_info": {
+            "provider": "openai",
+            "model": llm_config.model,
+            "version": "v1.0",
+        },
+        "latency_ms": 0,
+        "cost_usd": 0.0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "evaluation": judge_result.get("evaluation", {}),
+        "verdict_korean": judge_result.get("verdict_korean", "확인이 어렵습니다"),
+        "confidence_percent": judge_result.get("confidence_percent", 0),
+        "headline": judge_result.get("headline", ""),
+        "explanation": judge_result.get("explanation", ""),
+        "evidence_summary": judge_result.get("evidence_summary", []),
+    }
+
+
+def _build_user_result(judge_result: Dict[str, Any], claim_text: str) -> Dict[str, Any]:
+    """클라이언트 표시용 결과."""
+    verdict_label = judge_result.get("verdict_label", "FALSE")
+    confidence_percent = judge_result.get("confidence_percent", 0)
+
+    verdict_style = {
+        "TRUE": {"icon": "✅", "color": "green", "badge": "사실"},
+        "FALSE": {"icon": "❌", "color": "red", "badge": "거짓"},
+    }
+    style = verdict_style.get(verdict_label, verdict_style["FALSE"])
+
+    evidence_list = []
+    for ev in judge_result.get("evidence_summary", []):
+        evidence_list.append(
+            {
+                "text": ev.get("point", ""),
+                "source": {
+                    "title": ev.get("source_title", ""),
+                    "url": ev.get("source_url", ""),
+                },
+            }
+        )
+
+    return {
+        "claim": claim_text,
+        "verdict": {
+            "label": verdict_label,
+            "korean": judge_result.get("verdict_korean", "확인이 어렵습니다"),
+            "confidence_percent": confidence_percent,
+            "icon": style["icon"],
+            "color": style["color"],
+            "badge": style["badge"],
+        },
+        "headline": judge_result.get("headline", ""),
+        "explanation": judge_result.get("explanation", ""),
+        "evidence": evidence_list,
+        "cautions": judge_result.get("cautions", []),
+        "recommendation": judge_result.get("recommendation", ""),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _format_citations(
+    selected_ids: List[str],
+    evidence_index: Dict[str, Any],
+    citation_index: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """selected_evidence_ids를 PRD 스키마 citation으로 변환."""
+    formatted = []
+    for evid_id in selected_ids:
+        ev = evidence_index.get(evid_id, {})
+        cit = citation_index.get(evid_id, {})
+        formatted.append(
+            {
+                "source_type": ev.get("source_type", "NEWS"),
+                "title": cit.get("title") or ev.get("title", ""),
+                "url": cit.get("url") or ev.get("url", ""),
+                "doc_id": None,
+                "doc_version_id": None,
+                "locator": {},
+                "quote": cit.get("quote") or ev.get("snippet", ""),
+                "relevance": 0.0,
+            }
+        )
+    return formatted
+
+
+def _determine_risk_flags(
+    judge_result: Dict[str, Any],
+) -> List[str]:
+    """risk_flags 결정 (LLM 결과 기반)."""
+    flags = list(judge_result.get("risk_flags", []))
+
+    if judge_result.get("confidence_percent", 0) < 50 and "LOW_CONFIDENCE" not in flags:
+        flags.append("LOW_CONFIDENCE")
+
+    evaluation = judge_result.get("evaluation", {})
+    if evaluation.get("hallucination_count", 0) >= 2 and "HALLUCINATION_DETECTED" not in flags:
+        flags.append("HALLUCINATION_DETECTED")
+
+    if evaluation.get("policy_violations") and "POLICY_RISK" not in flags:
+        flags.append("POLICY_RISK")
+
+    if len(judge_result.get("selected_evidence_ids", [])) < 2 and "LOW_EVIDENCE" not in flags:
+        flags.append("LOW_EVIDENCE")
+
+    return flags
+
+
+def _apply_rule_based_judge(
+    claim_text: str,
+    support_pack: Dict[str, Any],
+    skeptic_pack: Dict[str, Any],
+    evidence_index: Dict[str, Any],
+) -> Dict[str, Any]:
+    """LLM 실패 시 규칙 기반 판정."""
+    support_cits = support_pack.get("citations", []) or []
+    skeptic_cits = skeptic_pack.get("citations", []) or []
+
+    label = "TRUE" if len(support_cits) >= len(skeptic_cits) else "FALSE"
+    confidence_percent = 30
+
+    selected_ids = [c.get("evid_id") for c in (support_cits if label == "TRUE" else skeptic_cits) if c.get("evid_id") in evidence_index]
+
+    judge_result = {
+        "evaluation": {
+            "hallucination_count": -1,
+            "grounding_score": -1.0,
+            "is_consistent": None,
+            "policy_violations": [],
+        },
+        "verdict_label": label,
+        "verdict_korean": "사실입니다" if label == "TRUE" else "거짓입니다",
+        "confidence_percent": confidence_percent,
+        "headline": f"이 주장은 {confidence_percent}% 확률로 {'사실입니다' if label == 'TRUE' else '거짓입니다'}",
+        "explanation": "LLM 판정 실패로 규칙 기반 판단을 적용했습니다.",
+        "evidence_summary": _build_evidence_summary(selected_ids, evidence_index),
+        "cautions": ["자동 판정 결과이므로 참고용으로만 활용해 주세요"],
+        "recommendation": "추가 검증을 위해 공식 출처를 직접 확인해 보시기 바랍니다.",
+        "risk_flags": ["LLM_JUDGE_FAILED"],
+        "selected_evidence_ids": selected_ids,
+    }
+
+    return {
+        "final_verdict": _build_final_verdict(judge_result, evidence_index, {}, ""),
+        "user_result": _build_user_result(judge_result, claim_text),
+    }
+
+
+def _create_fallback_result(error_msg: str) -> Dict[str, Any]:
+    """에러 시 fallback 결과 생성."""
+    judge_result = {
+        "verdict_label": "FALSE",
+        "verdict_korean": "거짓입니다",
+        "confidence_percent": 0,
+        "headline": "이 주장은 현재 확인이 어렵습니다",
+        "explanation": f"시스템 오류로 인해 검증을 완료할 수 없습니다. ({error_msg[:50]})",
+        "evidence_summary": [],
+        "cautions": ["자동 분석 결과이므로 참고용으로만 활용해 주세요"],
+        "recommendation": "추가 검증을 위해 공식 출처를 직접 확인해 보시기 바랍니다.",
+        "risk_flags": ["QUALITY_GATE_FAILED"],
+        "selected_evidence_ids": [],
+    }
+
+    final_verdict = _build_final_verdict(judge_result, {}, {}, "")
+    user_result = _build_user_result(judge_result, "")
+
+    return {
+        "final_verdict": final_verdict,
+        "user_result": user_result,
+    }
 
 
 def run(state: dict) -> dict:
     """
-    Stage 9 실행: 사용자 친화적 최종 결과 생성.
-
-    Args:
-        state: 파이프라인 상태 dict
-
-    Returns:
-        final_verdict와 user_result가 추가된 state
+    Stage 9 실행: TRUE/FALSE 최종 판정 + 사용자 친화 결과 생성.
     """
     trace_id = state.get("trace_id", "unknown")
     claim_text = state.get("claim_text", "")
-    draft_verdict = state.get("draft_verdict", {})
-    quality_score = state.get("quality_score", 0)
-    evidence_topk = state.get("evidence_topk", [])
     language = state.get("language", "ko")
 
+    support_pack = state.get("support_pack", {})
+    skeptic_pack = state.get("skeptic_pack", {})
+    evidence_index = state.get("evidence_index", {})
+
     logger.info(
-        f"[{trace_id}] Stage9 시작: "
-        f"quality_score={quality_score}, "
-        f"draft_stance={draft_verdict.get('stance', 'UNKNOWN')}"
+        f"[{trace_id}] Stage9 시작: support_cits={len(support_pack.get('citations', []))}, "
+        f"skeptic_cits={len(skeptic_pack.get('citations', []))}"
     )
 
-    # 입력 검증
-    if not draft_verdict:
-        logger.warning(f"[{trace_id}] draft_verdict 없음, fallback 적용")
+    if not support_pack and not skeptic_pack:
+        logger.warning(f"[{trace_id}] support/skeptic pack 없음, fallback 적용")
         fallback = _create_fallback_result("검증 데이터가 없습니다")
         state["final_verdict"] = fallback["final_verdict"]
         state["user_result"] = fallback["user_result"]
@@ -340,16 +568,21 @@ def run(state: dict) -> dict:
         return state
 
     try:
-        # LLM Judge 결과 생성
+        # Stage9에서 별도 retrieval을 수행해 Judge가 직접 근거를 비교하도록 한다.
+        retrieval_sources = _retrieve_judge_evidence(claim_text, state.get("search_mode", "auto"))
+        state["judge_retrieval"] = retrieval_sources
+
+        merged_evidence_index = _build_evidence_index(evidence_index, retrieval_sources)
+        citation_index = _build_citation_index(support_pack, skeptic_pack, retrieval_sources)
+
         system_prompt = load_system_prompt()
         user_prompt = _build_judge_user_prompt(
-            claim_text, draft_verdict, evidence_topk, quality_score, language
+            claim_text, support_pack, skeptic_pack, merged_evidence_index, retrieval_sources, language
         )
         state["prompt_judge_user"] = user_prompt
         state["prompt_judge_system"] = system_prompt
 
         runtime = _get_llm_runtime()
-
         last_response: str = ""
 
         def operation():
@@ -376,35 +609,30 @@ def run(state: dict) -> dict:
 
             state["slm_raw_judge"] = last_response
             parsed = validate_judge_output(parsed)
-            return _postprocess_judge_result(parsed, draft_verdict, evidence_topk, quality_score)
+            return _postprocess_judge_result(parsed, support_pack, skeptic_pack, merged_evidence_index)
 
         judge_result = runtime.execute(operation, "judge_verdict")
 
-        # 최종 결과 구성
         final_verdict = _build_final_verdict(
             judge_result=judge_result,
-            draft_verdict=draft_verdict,
-            evidence_topk=evidence_topk,
+            evidence_index=merged_evidence_index,
+            citation_index=citation_index,
             trace_id=trace_id,
         )
 
-        # 사용자 표시용 결과 (클라이언트 직접 사용)
         user_result = _build_user_result(judge_result, claim_text)
 
-        # risk_flags 병합
         existing_flags = state.get("risk_flags", [])
-        new_flags = _determine_risk_flags(judge_result, quality_score, draft_verdict)
+        new_flags = _determine_risk_flags(judge_result)
         merged_flags = list(set(existing_flags + new_flags))
 
         state["final_verdict"] = final_verdict
         state["user_result"] = user_result
         state["risk_flags"] = merged_flags
 
-        # evaluation 결과 로깅
         evaluation = judge_result.get("evaluation", {})
         logger.info(
-            f"[{trace_id}] Stage9 완료: "
-            f"label={judge_result.get('verdict_label')}, "
+            f"[{trace_id}] Stage9 완료: label={judge_result.get('verdict_label')}, "
             f"confidence={judge_result.get('confidence_percent')}%, "
             f"hallucination={evaluation.get('hallucination_count', 'N/A')}, "
             f"grounding={evaluation.get('grounding_score', 'N/A')}"
@@ -412,7 +640,7 @@ def run(state: dict) -> dict:
 
     except GatewayError as e:
         logger.error(f"[{trace_id}] LLM Judge 실패: {e}")
-        fallback = _apply_rule_based_judge(draft_verdict, evidence_topk, quality_score, claim_text)
+        fallback = _apply_rule_based_judge(claim_text, support_pack, skeptic_pack, evidence_index)
         state["final_verdict"] = fallback["final_verdict"]
         state["user_result"] = fallback["user_result"]
         state["risk_flags"] = state.get("risk_flags", []) + ["LLM_JUDGE_FAILED"]
@@ -425,323 +653,3 @@ def run(state: dict) -> dict:
         state["risk_flags"] = state.get("risk_flags", []) + ["QUALITY_GATE_FAILED"]
 
     return state
-
-
-def _build_final_verdict(
-    judge_result: Dict[str, Any],
-    draft_verdict: Dict[str, Any],
-    evidence_topk: List[Dict[str, Any]],
-    trace_id: str,
-) -> Dict[str, Any]:
-    """PRD 스키마 + 품질 평가 + 사용자 친화적 필드를 포함한 최종 verdict."""
-    # citations 변환
-    raw_citations = draft_verdict.get("citations", [])
-    formatted_citations = _format_citations(raw_citations, evidence_topk)
-
-    # evaluation 추출
-    evaluation = judge_result.get("evaluation", {})
-
-    llm_config = _get_llm_config()
-
-    return {
-        # PRD 표준 필드
-        "analysis_id": trace_id,
-        "label": judge_result.get("verdict_label", "UNVERIFIED"),
-        "confidence": judge_result.get("confidence_percent", 0) / 100.0,
-        "summary": judge_result.get("headline", ""),
-        "rationale": [ev.get("point", "") for ev in judge_result.get("evidence_summary", [])],
-        "citations": formatted_citations,
-        "counter_evidence": [],
-        "limitations": judge_result.get("cautions", []),
-        "recommended_next_steps": [judge_result.get("recommendation", "")] if judge_result.get("recommendation") else [],
-        "risk_flags": judge_result.get("risk_flags", []),
-        "model_info": {
-            "provider": "openai",
-            "model": llm_config.model,
-            "version": "v1.0",
-        },
-        "latency_ms": 0,
-        "cost_usd": 0.0,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-
-        # 품질 평가 필드 (LLM Judge 결과)
-        "evaluation": {
-            "hallucination_count": evaluation.get("hallucination_count", -1),
-            "grounding_score": evaluation.get("grounding_score", -1.0),
-            "is_consistent": evaluation.get("is_consistent"),
-            "policy_violations": evaluation.get("policy_violations", []),
-        },
-
-        # 최종 결과 구성
-        "verdict_korean": judge_result.get("verdict_korean", "확인이 어렵습니다"),
-        "confidence_percent": judge_result.get("confidence_percent", 0),
-        "headline": judge_result.get("headline", ""),
-        "explanation": judge_result.get("explanation", ""),
-        "evidence_summary": judge_result.get("evidence_summary", []),
-    }
-
-
-def _build_user_result(judge_result: Dict[str, Any], claim_text: str) -> Dict[str, Any]:
-    """
-    클라이언트에서 직접 표시할 수 있는 사용자 친화적 결과.
-
-    이 결과를 그대로 UI에 렌더링할 수 있습니다.
-    """
-    verdict_label = judge_result.get("verdict_label", "UNVERIFIED")
-    confidence_percent = judge_result.get("confidence_percent", 0)
-
-    # 입력 검증
-    verdict_style = {
-        "TRUE": {"icon": "✅", "color": "green", "badge": "사실"},
-        "FALSE": {"icon": "❌", "color": "red", "badge": "거짓"},
-        "MIXED": {"icon": "⚠️", "color": "orange", "badge": "일부 사실"},
-        "UNVERIFIED": {"icon": "❓", "color": "gray", "badge": "확인 불가"},
-    }
-    style = verdict_style.get(verdict_label, verdict_style["UNVERIFIED"])
-
-    # 근거 목록 (출처 포함)
-    evidence_list = []
-    for ev in judge_result.get("evidence_summary", []):
-        evidence_list.append({
-            "text": ev.get("point", ""),
-            "source": {
-                "title": ev.get("source_title", ""),
-                "url": ev.get("source_url", ""),
-            }
-        })
-
-    return {
-        # 최종 결과 구성
-        "claim": claim_text,
-        "verdict": {
-            "label": verdict_label,
-            "korean": judge_result.get("verdict_korean", "확인이 어렵습니다"),
-            "confidence_percent": confidence_percent,
-            "icon": style["icon"],
-            "color": style["color"],
-            "badge": style["badge"],
-        },
-
-        # 최종 결과 구성
-        "headline": judge_result.get("headline", ""),
-        "explanation": judge_result.get("explanation", ""),
-
-        # 최종 결과 구성
-        "evidence": evidence_list,
-
-        # 최종 결과 구성
-        "cautions": judge_result.get("cautions", []),
-
-        # 최종 결과 구성
-        "recommendation": judge_result.get("recommendation", ""),
-
-        # 최종 결과 구성
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def _format_citations(
-    raw_citations: List[Dict[str, Any]],
-    evidence_topk: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """citations를 PRD 스키마에 맞게 변환."""
-    evidence_map = {ev.get("evid_id", ""): ev for ev in evidence_topk}
-
-    formatted = []
-    for cit in raw_citations:
-        evid_id = cit.get("evid_id", "")
-        source_ev = evidence_map.get(evid_id, {})
-
-        formatted.append({
-            "source_type": source_ev.get("source_type", "NEWS"),
-            "title": cit.get("title") or source_ev.get("title", ""),
-            "url": cit.get("url") or source_ev.get("url", ""),
-            "doc_id": None,
-            "doc_version_id": None,
-            "locator": {},
-            "quote": cit.get("quote", ""),
-            "relevance": source_ev.get("score", 0.0),
-        })
-
-    return formatted
-
-
-def _determine_risk_flags(
-    judge_result: Dict[str, Any],
-    quality_score: int,
-    draft_verdict: Dict[str, Any],
-) -> List[str]:
-    """risk_flags 결정 (LLM 결과 + 규칙 기반 병합)."""
-    # LLM이 반환한 risk_flags 먼저 사용
-    flags = list(judge_result.get("risk_flags", []))
-
-    # 입력 검증
-    # 입력 검증
-    if quality_score < QUALITY_SCORE_CUTOFF:
-        if "QUALITY_GATE_FAILED" not in flags:
-            flags.append("QUALITY_GATE_FAILED")
-
-    # 입력 검증
-    if judge_result.get("confidence_percent", 0) < 50:
-        if "LOW_CONFIDENCE" not in flags:
-            flags.append("LOW_CONFIDENCE")
-
-    # 입력 검증
-    citations_count = len(draft_verdict.get("citations", []))
-    if citations_count < 2:
-        if "LOW_EVIDENCE" not in flags:
-            flags.append("LOW_EVIDENCE")
-
-    # UNVERIFIED 결과
-    if judge_result.get("verdict_label") == "UNVERIFIED":
-        if "LOW_EVIDENCE" not in flags:
-            flags.append("LOW_EVIDENCE")
-
-    # evaluation 추출
-    evaluation = judge_result.get("evaluation", {})
-
-    if evaluation.get("hallucination_count", 0) >= 2:
-        if "HALLUCINATION_DETECTED" not in flags:
-            flags.append("HALLUCINATION_DETECTED")
-
-    if evaluation.get("policy_violations"):
-        if "POLICY_RISK" not in flags:
-            flags.append("POLICY_RISK")
-
-    return flags
-
-
-def _apply_rule_based_judge(
-    draft_verdict: Dict[str, Any],
-    evidence_topk: List[Dict[str, Any]],
-    quality_score: int,
-    claim_text: str,
-) -> Dict[str, Any]:
-    """LLM 실패 시 규칙 기반 판정."""
-    stance = draft_verdict.get("stance", "UNVERIFIED")
-    confidence = draft_verdict.get("confidence", 0.0)
-    citations = draft_verdict.get("citations", [])
-
-    # 입력 검증
-    if quality_score < QUALITY_SCORE_CUTOFF or not citations:
-        stance = "UNVERIFIED"
-        confidence = 0.0
-
-    verdict_korean_map = {
-        "TRUE": "사실입니다",
-        "FALSE": "거짓입니다",
-        "MIXED": "일부 사실입니다",
-        "UNVERIFIED": "확인이 어렵습니다",
-    }
-
-    confidence_percent = int(confidence * 100)
-    verdict_korean = verdict_korean_map.get(stance, "확인이 어렵습니다")
-
-    # evidence_summary 생성
-    evidence_map = {ev.get("evid_id", ""): ev for ev in evidence_topk}
-    evidence_summary = []
-    for cit in citations[:3]:
-        evid_id = cit.get("evid_id", "")
-        source_ev = evidence_map.get(evid_id, {})
-        evidence_summary.append({
-            "point": cit.get("quote", "")[:100] or "근거 확인 필요",
-            "source_title": source_ev.get("title", ""),
-            "source_url": source_ev.get("url", ""),
-        })
-
-    judge_result = {
-        # 품질 평가 (규칙 기반 - LLM 없음)
-        "evaluation": {
-            "hallucination_count": -1,  # -1: 평가 불가
-            "grounding_score": -1.0,
-            "is_consistent": None,
-            "policy_violations": [],
-        },
-        # 최종 결과 구성
-        "verdict_label": stance,
-        "verdict_korean": verdict_korean,
-        "confidence_percent": confidence_percent,
-        "headline": f"이 주장은 {confidence_percent}% 확률로 {verdict_korean}" if stance != "UNVERIFIED" else "이 주장은 현재 확인이 어렵습니다",
-        "explanation": "자동 분석 시스템을 통해 검증되었습니다." if stance != "UNVERIFIED" else "충분한 근거를 확보하지 못해 확인이 어렵습니다.",
-        "evidence_summary": evidence_summary,
-        "cautions": ["자동 분석 결과이므로 참고용으로만 활용해 주세요"],
-        "recommendation": "추가 검증을 위해 공식 출처를 직접 확인해 보시기 바랍니다.",
-        "risk_flags": ["LLM_JUDGE_FAILED"],
-    }
-
-    final_verdict = _build_final_verdict(judge_result, draft_verdict, evidence_topk, "")
-    final_verdict["model_info"] = {
-        "provider": "fallback",
-        "model": "rule-based",
-        "version": "v1.0",
-    }
-    return {
-        "final_verdict": final_verdict,
-        "user_result": _build_user_result(judge_result, claim_text),
-    }
-
-
-def _create_fallback_result(error_msg: str) -> Dict[str, Any]:
-    """에러 시 fallback 결과 생성."""
-    judge_result = {
-        "verdict_label": "UNVERIFIED",
-        "verdict_korean": "확인이 어렵습니다",
-        "confidence_percent": 0,
-        "headline": "이 주장은 현재 확인이 어렵습니다",
-        "explanation": f"시스템 오류로 인해 검증을 완료할 수 없습니다. ({error_msg[:50]})",
-        "evidence_summary": [],
-        "cautions": ["자동 분석 결과이므로 참고용으로만 활용해 주세요"],
-        "recommendation": "추가 검증을 위해 공식 출처를 직접 확인해 보시기 바랍니다.",
-    }
-
-    final_verdict = {
-        "analysis_id": "",
-        "label": "UNVERIFIED",
-        "confidence": 0.0,
-        "summary": judge_result["headline"],
-        "rationale": [],
-        "citations": [],
-        "counter_evidence": [],
-        "limitations": ["시스템 오류 발생"],
-        "recommended_next_steps": [judge_result["recommendation"]],
-        "risk_flags": ["QUALITY_GATE_FAILED"],
-        "model_info": {"provider": "fallback", "model": "error", "version": "v1.0"},
-        "latency_ms": 0,
-        "cost_usd": 0.0,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        # 품질 평가 (fallback - 평가 불가)
-        "evaluation": {
-            "hallucination_count": -1,
-            "grounding_score": -1.0,
-            "is_consistent": None,
-            "policy_violations": [],
-        },
-        "verdict_korean": "확인이 어렵습니다",
-        "confidence_percent": 0,
-        "headline": judge_result["headline"],
-        "explanation": judge_result["explanation"],
-        "evidence_summary": [],
-    }
-
-    user_result = {
-        "claim": "",
-        "verdict": {
-            "label": "UNVERIFIED",
-            "korean": "확인이 어렵습니다",
-            "confidence_percent": 0,
-            "icon": "❓",
-            "color": "gray",
-            "badge": "확인 불가",
-        },
-        "headline": judge_result["headline"],
-        "explanation": judge_result["explanation"],
-        "evidence": [],
-        "cautions": judge_result["cautions"],
-        "recommendation": judge_result["recommendation"],
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    return {
-        "final_verdict": final_verdict,
-        "user_result": user_result,
-    }

@@ -4,11 +4,15 @@ import 'package:share_plus/share_plus.dart';
 import 'package:screenshot/screenshot.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'dart:typed_data'; // Uint8List
+import 'package:flutter/foundation.dart' show kIsWeb; // Platform check
 import '../models/evidence_card.dart';
 import '../repository/api_verify_repository.dart';
 import '../../shell/shell_controller.dart';
 import '../../settings/settings_screen.dart';
 import '../../history/history_screen.dart';
+import '../../history/history_controller.dart';
+import '../../history/models/history_item.dart';
 import '../../bookmark/bookmark_controller.dart';
 import '../../bookmark/models/bookmark_item.dart';
 import '../../bookmark/bookmark_screen.dart';
@@ -117,22 +121,26 @@ class ResultController extends GetxController {
 
   /// ✅ 이미지 생성 + 공유 (빅테크 방식)
   // ✅ 이미지 생성 + 공유 (빅테크 방식)
+  /// ✅ 이미지 생성 + 공유 (Cross-Platform Support)
   Future<void> shareResult() async {
     try {
       debugPrint('📝 공유 프로세스 시작...');
 
-      // 1) 이미지 생성
-      debugPrint('🎨 이미지 생성 시작...');
-      final imageFile = await _generateShareImage();
-      debugPrint('✅ 이미지 생성 완료: ${imageFile.path}');
+      // 1) 이미지 생성 (Uint8List Bytes)
+      debugPrint('🎨 이미지 생성 (캡처) 시작...');
+      final imageBytes = await _captureShareImage();
+      
+      if (imageBytes.isEmpty) {
+        throw StateError('이미지 생성 실패: 데이터 없음');
+      }
+      debugPrint('✅ 이미지 캡처 완료: ${imageBytes.lengthInBytes} bytes');
 
-      // 2) 공유 실행
+      // 2) 공유 실행 (플랫폼 분기)
       debugPrint('📤 공유 시트 열기...');
 
-      // ✅ iPad/iOS용 공유 위치 설정 (공유 버튼 위치: 우하단)
+      // ✅ iPad/iOS용 공유 위치 설정
       final box = Get.context?.findRenderObject() as RenderBox?;
       final screenSize = box?.size ?? const Size(390, 844);
-
       final shareButtonRect = Rect.fromLTWH(
         screenSize.width - 74,
         screenSize.height - 142,
@@ -140,8 +148,29 @@ class ResultController extends GetxController {
         56,
       );
 
+      final XFile xFile;
+      
+      // 🌐 WEB: 파일 시스템 접근 불가 -> 메모리(Bytes)에서 바로 생성
+      if (kIsWeb) {
+        debugPrint('🌐 Web 환경 감지: 메모리 공유 방식장 사용');
+        xFile = XFile.fromData(
+          imageBytes, 
+          mimeType: 'image/png', 
+          name: 'olala_result.png'
+        );
+      } 
+      // 📱 APP: 파일 시스템 사용 (기존 방식)
+      else {
+        debugPrint('📱 App 환경 감지: 파일 시스템 방식 사용');
+        final directory = await getTemporaryDirectory();
+        final imagePath = '${directory.path}/olala_result_${DateTime.now().millisecondsSinceEpoch}.png';
+        final file = File(imagePath);
+        await file.writeAsBytes(imageBytes);
+        xFile = XFile(imagePath);
+      }
+
       final result = await Share.shareXFiles(
-        [XFile(imageFile.path)],
+        [xFile],
         subject: 'OLaLA 팩트체크 결과',
         sharePositionOrigin: shareButtonRect,
       );
@@ -154,22 +183,25 @@ class ResultController extends GetxController {
     }
   }
 
-  /// 공유용 이미지 생성 (스크린샷)
-  Future<File> _generateShareImage() async {
+  /// 공유용 이미지 데이터(Bytes) 생성
+  Future<Uint8List> _captureShareImage() async {
     final screenshotController = ScreenshotController();
     final context = Get.context;
     const pixelRatio = 2.0;
+    
+    // View context fallback for headless/background execution
     final fallBackView = WidgetsBinding.instance.platformDispatcher.views.first;
     final view = context != null
         ? (View.maybeOf(context) ?? fallBackView)
         : fallBackView;
+        
     final baseMedia = MediaQueryData.fromView(view);
     final shareMedia = baseMedia.copyWith(
       size: _shareImageSize,
       devicePixelRatio: pixelRatio,
     );
 
-    final image = await screenshotController.captureFromWidget(
+    return await screenshotController.captureFromWidget(
       MediaQuery(
         data: shareMedia,
         child: Align(
@@ -195,20 +227,8 @@ class ResultController extends GetxController {
       pixelRatio: pixelRatio,
       delay: _shareRenderDelay,
     );
-
-    if (image.isEmpty) {
-      throw StateError('공유 이미지 생성 실패: 빈 이미지');
-    }
-
-    // 임시 디렉토리에 저장
-    final directory = await getTemporaryDirectory();
-    final imagePath =
-        '${directory.path}/olala_result_${DateTime.now().millisecondsSinceEpoch}.png';
-    final imageFile = File(imagePath);
-
-    await imageFile.writeAsBytes(image);
-    return imageFile;
   }
+
 
 
   String _defaultHeadline(VerdictType v) {
@@ -311,6 +331,7 @@ class ResultController extends GetxController {
     }
   }
   
+
   void _processResult(Map<String, dynamic> resultMap) {
     final label = resultMap['label'] as String;
     verdictType.value = _parseVerdict(label);
@@ -328,6 +349,47 @@ class ResultController extends GetxController {
     
     final citations = (resultMap['citations'] as List?) ?? [];
     evidenceCards.value = citations.map<EvidenceCard>((c) => EvidenceCard.fromJson(c)).toList();
+
+    // Save to history
+    _saveHistory();
+  }
+
+  void _saveHistory() {
+    try {
+      final historyController = Get.isRegistered<HistoryController>()
+          ? Get.find<HistoryController>()
+          : Get.put(HistoryController());
+
+      final item = HistoryItem(
+        id: 'h_${DateTime.now().millisecondsSinceEpoch}',
+        inputSummary: successHeadline.value,
+        resultLabel: _bookmarkLabel(verdictType.value),
+        timestamp: DateTime.now(),
+        confidence: confidence.value,
+        headline: successHeadline.value,
+        summary: successReason.value,
+        userQuery: userQuery.value,
+        evidenceCards: evidenceCards.toList(),
+      );
+
+      historyController.saveItem(item);
+      debugPrint('✅ History saved: ${item.id}');
+    } catch (e) {
+      debugPrint('❌ Failed to save history: $e');
+    }
+  }
+
+  /// Load result from history item (for viewing details)
+  void loadFromHistory(HistoryItem item) {
+    userQuery.value = item.userQuery;
+    verdictType.value = _parseVerdict(item.resultLabel);
+    confidence.value = item.confidence;
+    successHeadline.value = item.headline;
+    successReason.value = item.summary;
+    evidenceCards.value = item.evidenceCards;
+    
+    // Set state to success immediately to show the result
+    resultState.value = ResultState.success;
   }
 
   VerdictType _parseVerdict(String label) {
@@ -340,3 +402,4 @@ class ResultController extends GetxController {
   }
 
 }
+

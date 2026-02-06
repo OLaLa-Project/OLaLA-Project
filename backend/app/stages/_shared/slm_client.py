@@ -48,7 +48,7 @@ class SLMConfig:
             base_url=_get("BASE_URL", "http://localhost:8080/v1"),
             api_key=_get("API_KEY", "local-slm-key"),
             model=_get("MODEL", default_model),
-            timeout=int(_get("TIMEOUT_SECONDS", "300")),
+            timeout=int(_get("TIMEOUT_SECONDS", "60")),
             max_tokens=int(_get("MAX_TOKENS", "1024")),
             temperature=float(_get("TEMPERATURE", "0.1")),
         )
@@ -66,6 +66,7 @@ class SLMClient:
         user_prompt: str,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        json_mode: bool = True,
     ) -> str:
         """
         Chat completion 호출.
@@ -75,6 +76,7 @@ class SLMClient:
             user_prompt: 사용자 프롬프트 (실제 태스크)
             max_tokens: 최대 출력 토큰 (None이면 config 값 사용)
             temperature: 온도 (None이면 config 값 사용)
+            json_mode: JSON 강제 모드 사용 여부 (default: True)
 
         Returns:
             모델 응답 텍스트
@@ -98,7 +100,10 @@ class SLMClient:
             "temperature": temperature if temperature is not None else self.config.temperature,
         }
 
-        logger.debug(f"SLM 호출: model={self.config.model}, max_tokens={payload['max_tokens']}")
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+
+        logger.debug(f"SLM 호출: model={self.config.model}, max_tokens={payload['max_tokens']}, json_mode={json_mode}")
 
         def _post_json(post_url: str, post_payload: dict) -> requests.Response:
             return requests.post(
@@ -108,28 +113,61 @@ class SLMClient:
                 timeout=self.config.timeout,
             )
 
+        # 1. Try OpenAI Endpoint
+        response = None
+        should_fallback = False
+
         try:
             response = _post_json(url, payload)
             if response.status_code == 404:
-                # Ollama 기본 엔드포인트 fallback
-                # base URL에 /v1이 있으면 제거, 없으면 그대로 사용하여 /api/generate로 전환
-                if "/v1" in base:
-                    ollama_url = base.replace("/v1", "/api/generate")
-                else:
-                    ollama_url = f"{base}/api/generate"
-                    
-                logger.warning(f"SLM 404 Fallback: {url} -> {ollama_url}")
-                ollama_payload = {
-                    "model": self.config.model,
-                    "prompt": user_prompt,
-                    "system": system_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature if temperature is not None else self.config.temperature,
-                        "num_predict": max_tokens or self.config.max_tokens,
-                    },
-                }
+                should_fallback = True
+            elif response.status_code == 400 and json_mode:
+                # Some OpenAI proxies might not support response_format, retry without it or fallback
+                logger.warning("SLM OpenAI Endpoint 400 Error (possible json_mode issue), trying fallback...")
+                should_fallback = True
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"SLM OpenAI Endpoint Connection Failed ({e}), attempting fallback to Native API...")
+            should_fallback = True
+
+        # 2. Fallback to Native Ollama if needed
+        if should_fallback:
+            # Ollama 기본 엔드포인트 fallback
+            if "/v1" in base:
+                ollama_url = base.replace("/v1", "/api/generate")
+            else:
+                ollama_url = f"{base}/api/generate"
+                
+            logger.warning(f"SLM Fallback: Trying {ollama_url}")
+            
+            ollama_payload = {
+                "model": self.config.model,
+                "prompt": user_prompt,
+                "system": system_prompt,
+                "stream": False,
+                "options": {
+                    "temperature": temperature if temperature is not None else self.config.temperature,
+                    "num_predict": max_tokens or self.config.max_tokens,
+                },
+            }
+            
+            if json_mode:
+                ollama_payload["format"] = "json"
+
+            # Retry with native endpoint
+            try:
                 response = _post_json(ollama_url, ollama_payload)
+            except requests.exceptions.RequestException as e:
+                # If JSON mode caused a crash (RemoteDisconnected), try one last time without JSON mode
+                if json_mode:
+                    logger.warning(f"SLM Native JSON Mode Failed ({e}). Retrying without JSON mode...")
+                    if "format" in ollama_payload:
+                        del ollama_payload["format"]
+                    response = _post_json(ollama_url, ollama_payload)
+                else:
+                    raise
+
+        # 3. Process Response
+        if response:
             response.raise_for_status()
             try:
                 data = response.json()
@@ -137,24 +175,17 @@ class SLMClient:
                 logger.error(f"SLM API 응답 파싱 실패: {e}")
                 logger.error(f"응답 본문: {response.text}")
                 raise
+            
             if "choices" in data:
                 content = data["choices"][0]["message"]["content"]
             else:
                 content = data.get("response", "")
             logger.debug(f"SLM 응답 길이: {len(content)} chars")
             return (content or "").strip()
+        else:
+             raise SLMError("SLM failed to return any response")
 
-        except requests.exceptions.Timeout:
-            logger.error(f"SLM 타임아웃: {self.config.timeout}초 초과")
-            raise SLMError(f"SLM 호출 타임아웃 ({self.config.timeout}초)")
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"SLM 호출 실패: {e}")
-            raise SLMError(f"SLM 호출 실패: {e}")
-
-        except (KeyError, IndexError) as e:
-            logger.error(f"SLM 호출 실패: {e}")
-            raise SLMError(f"SLM 호출 실패: {e}")
 
 
 class SLMError(Exception):

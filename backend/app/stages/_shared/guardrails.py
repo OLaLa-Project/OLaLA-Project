@@ -11,7 +11,6 @@ import json
 import re
 import logging
 from typing import Any, Callable, Optional
-import json_repair  # Robust JSON parser
 
 logger = logging.getLogger(__name__)
 
@@ -62,27 +61,95 @@ def normalize_json_text(text: str) -> str:
 
 def parse_json_safe(text: str) -> Optional[dict]:
     """
-    안전한 JSON 파싱. 실패 시 json_repair 사용.
+    안전한 JSON 파싱. 실패 시 None 반환.
     """
     try:
         extracted = extract_json_from_text(text)
-        # 1. Standard strict parse try
         return json.loads(extracted)
-    except (json.JSONDecodeError, TypeError):
-        # 2. Repair try
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning(f"JSON 파싱 실패: {e}")
+        # 1차 정규화 및 수동 복구 시도
         try:
-            logger.warning("Standard JSON parse failed, trying json_repair.loads...")
-            # json_repair.loads performs repair and load
-            parsed = json_repair.loads(text)
-            # Sometimes it returns list or primitives, force dict or list result usually expected
-            if isinstance(parsed, (dict, list)):
-                return parsed
-            # If it repaired into a string, it might have failed to find structure
-            logger.warning(f"json_repair returned non-container: {type(parsed)}")
-            return None
-        except Exception as e:
-            logger.warning(f"json_repair failed: {e}")
-            return None
+            normalized = normalize_json_text(extracted)
+            
+            # Smart Balancing Strategies
+            # Strategy 1: Naive (} then ]) - Standard for non-nested or simple object truncation
+            balanced_1 = normalized
+            if balanced_1.count('{') > balanced_1.count('}'):
+                balanced_1 += '}' * (balanced_1.count('{') - balanced_1.count('}'))
+            if balanced_1.count('[') > balanced_1.count(']'):
+                balanced_1 += ']' * (balanced_1.count('[') - balanced_1.count(']'))
+            
+            try:
+                return json.loads(balanced_1)
+            except:
+                pass
+
+            # Strategy 2: Reverse Order (] then }) - Better for list truncation like [ { ...
+            balanced_2 = normalized
+            if balanced_2.count('[') > balanced_2.count(']'):
+                balanced_2 += ']' * (balanced_2.count('[') - balanced_2.count(']'))
+            if balanced_2.count('{') > balanced_2.count('}'):
+                balanced_2 += '}' * (balanced_2.count('{') - balanced_2.count('}'))
+            
+            try:
+                return json.loads(balanced_2)
+            except:
+                pass
+            
+            # Strategy 3: Prune last item (if truncated)
+            # Find the last comma, cut everything after it, then balace.
+            last_comma = normalized.rfind(',')
+            if last_comma != -1:
+                pruned = normalized[:last_comma]
+                # Balance prune (Try ] then } as default for lists)
+                if pruned.count('[') > pruned.count(']'):
+                    pruned += ']' * (pruned.count('[') - pruned.count(']'))
+                if pruned.count('{') > pruned.count('}'):
+                    pruned += '}' * (pruned.count('{') - pruned.count('}'))
+                try:
+                    return json.loads(pruned)
+                except:
+                    pass
+
+            # If all balancing failed, fall back to "fixed" (likely empty or very broken)
+            # Use balanced_1 as base for regex repairs
+            fixed = balanced_1
+
+        except (json.JSONDecodeError, TypeError) as e2:
+             # Should not happen as we catch above, but for safety
+             fixed = normalized
+
+        # Last ditch effort: regex fixes
+        try:
+             # 1. Remove dangling start braces/brackets just before closing (from bad balancing)
+             fixed = re.sub(r',\s*[{\[]\s*([\]}])', r'\1', fixed)
+
+             # 2. Add missing commas between } or ] and { or [ or "
+             # Covers: } { | ] [ | } " | ] "
+             fixed = re.sub(r'([}\]])\s*([{\["])', r'\1, \2', fixed)
+
+             # 3. Add missing commas between strings
+             fixed = re.sub(r'"\s+"', '", "', fixed)
+                
+             # 3. Escape unescaped double quotes inside string values
+             def escape_inner_quotes(m):
+                 start, body, end = m.groups()
+                 fixed_body = re.sub(r'(?<!\\)"', r'\\"', body)
+                 return f"{start}{fixed_body}{end}"
+
+             fixed = re.sub(
+                 r'(:\s*")(.*?)((?<!\\)"\s*(?:,|}|]))', 
+                 escape_inner_quotes, 
+                 fixed, 
+                 flags=re.DOTALL
+             )
+
+             return json.loads(fixed)
+        except Exception as e3:
+             logger.error(f"JSON 정규화/복구 후 파싱 최종 실패: {e3}")
+             logger.error(f"Failed JSON Content (First 1000 chars): {normalized[:1000]}")
+             return None
 
 
 def parse_json_with_retry(

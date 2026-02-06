@@ -1,31 +1,31 @@
 services:
-  db:
-    image: pgvector/pgvector:pg17
-    container_name: olala-db
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-olala}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      PGDATA: /var/lib/postgresql/data/pgdata
-    ports:
-      - "5432:5432"
-    shm_size: 1gb
-    volumes:
-      # - ./storage/pgdata:/var/lib/postgresql/data
-      # - /home/edu09/workspace/dev/OLaLA-Project/storage/pgdata:/var/lib/postgresql/data
-      - /home/edu09/workspace/OLaLA-Project/storage/pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-olala}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
+  # db:
+  #   image: pgvector/pgvector:pg17
+  #   container_name: olala-db
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   environment:
+  #     POSTGRES_DB: ${POSTGRES_DB:-olala}
+  #     POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  #     PGDATA: /var/lib/postgresql/data/pgdata
+  #   ports:
+  #     - "5432:5432"
+  #   shm_size: 1gb
+  #   volumes:
+  #     # - ./storage/pgdata:/var/lib/postgresql/data
+  #     # - /home/edu09/workspace/dev/OLaLA-Project/storage/pgdata:/var/lib/postgresql/data
+  #     - /home/edu09/workspace/OLaLA-Project/storage/pgdata:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-olala}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   logging:
+  #     driver: json-file
+  #     options:
+  #       max-size: "10m"
+  #       max-file: "5"
 
   # ollama:
   #   image: ollama/ollama:latest
@@ -51,22 +51,22 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DB_HOST: db
+      DB_HOST: ${DB_HOST:-192.168.0.4}
       DB_PORT: 5432
       DB_NAME: ${POSTGRES_DB:-olala}
       DB_USER: ${POSTGRES_USER:-postgres}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-olala}
-      OLLAMA_URL: http://host.docker.internal:11434
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@${DB_HOST:-192.168.0.4}:5432/${POSTGRES_DB:-olala}
+      OLLAMA_URL: http://192.168.0.4:11434
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-300}
-      SLM_BASE_URL: ${SLM_BASE_URL:-http://host.docker.internal:11434}
-      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://host.docker.internal:11434}
+      SLM_BASE_URL: ${SLM_BASE_URL:-http://192.168.0.4:11434}
+      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://192.168.0.4:11434}
       SLM1_API_KEY: ${SLM1_API_KEY:-ollama}
       SLM1_MODEL: ${SLM1_MODEL:-gemma3:4b}
       SLM1_TIMEOUT_SECONDS: ${SLM1_TIMEOUT_SECONDS:-300}
       SLM1_MAX_TOKENS: ${SLM1_MAX_TOKENS:-768}
       SLM1_TEMPERATURE: ${SLM1_TEMPERATURE:-0.1}
-      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://host.docker.internal:11434}
+      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://192.168.0.4:11434}
       SLM2_API_KEY: ${SLM2_API_KEY:-ollama}
       SLM2_MODEL: ${SLM2_MODEL:-gemma3:4b}
       SLM2_TIMEOUT_SECONDS: ${SLM2_TIMEOUT_SECONDS:-300}
@@ -89,11 +89,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      db:
-        condition: service_healthy
-      # ollama:
-      #   condition: service_started
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
+    #   # ollama:
+    #   #   condition: service_started
     logging:
       driver: json-file
       options:

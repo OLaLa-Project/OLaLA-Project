@@ -1,33 +1,47 @@
 import 'package:get/get.dart';
+import 'package:get_storage/get_storage.dart';
 import 'models/history_item.dart';
 
 class HistoryController extends GetxController {
-  // MVP: 메모리 저장 (추후 local_storage로 교체)
+  final _box = GetStorage();
   final items = <HistoryItem>[].obs;
+  
+  static const String _storageKey = 'verification_history';
 
   @override
   void onInit() {
     super.onInit();
+    _loadItems();
+  }
 
-    // ✅ 데모 데이터 (Result 연결 전 임시)
-    if (items.isEmpty) {
-      items.addAll(List.generate(8, (i) {
-        return HistoryItem(
-          id: 'h_$i',
-          inputSummary: '예) https://example.com/news/${100 + i}',
-          resultLabel: i % 3 == 0 ? 'TRUE' : (i % 3 == 1 ? 'FALSE' : 'MIXED'),
-          timestamp: DateTime.now().subtract(Duration(minutes: i * 12)),
-        );
-      }));
+  void _loadItems() {
+    final List<dynamic>? stored = _box.read<List<dynamic>>(_storageKey);
+    if (stored != null) {
+      items.assignAll(stored.map((e) => HistoryItem.fromJson(e)).toList());
     }
+  }
+
+  void saveItem(HistoryItem item) {
+    // Add to top of list
+    items.insert(0, item);
+    
+    // Persist
+    _saveToStorage();
   }
 
   void removeById(String id) {
     items.removeWhere((e) => e.id == id);
+    _saveToStorage();
   }
 
   void clearAll() {
     items.clear();
+    _box.remove(_storageKey);
+  }
+
+  void _saveToStorage() {
+    final jsonList = items.map((e) => e.toJson()).toList();
+    _box.write(_storageKey, jsonList);
   }
 }
 

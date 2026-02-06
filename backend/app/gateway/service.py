@@ -161,8 +161,6 @@ async def run_pipeline_stream(req: TruthCheckRequest):
     
     if isinstance(req.stage_state, dict):
         state.update(req.stage_state)
-    if req.normalize_mode:
-        state["normalize_mode"] = req.normalize_mode
 
     stream_logger = logging.getLogger("uvicorn.error")
 
@@ -173,6 +171,8 @@ async def run_pipeline_stream(req: TruthCheckRequest):
     final_state = state.copy()
     current_stage = "initializing"
     
+    buffered_stage02: Dict[str, Any] | None = None
+    emitted_stage02 = False
     try:
         async for output in app.astream(state):
             for node_name, node_state in output.items():
@@ -193,18 +193,43 @@ async def run_pipeline_stream(req: TruthCheckRequest):
                     # Deep cleanup of canonical_evidence in stage_data
                     if "canonical_evidence" in stage_data:
                         ce = stage_data["canonical_evidence"]
-                        if isinstance(ce, dict): ce.pop("fetched_content", None)
+                        if isinstance(ce, dict):
+                            ce.pop("fetched_content", None)
+
+                # Stage02는 adapter 이후 search_queries를 포함해 전송
+                if node_name == "stage02_querygen":
+                    buffered_stage02 = stage_data
+                    continue
+
+                if node_name == "adapter_queries":
+                    merged = dict(buffered_stage02 or {})
+                    if "search_queries" in node_state:
+                        merged["search_queries"] = node_state.get("search_queries")
+                    stage_label = "stage02_querygen"
+                    stage_payload = merged
+                    emitted_stage02 = True
+                else:
+                    stage_label = node_name
+                    stage_payload = stage_data
 
                 yield json.dumps({
                     "event": "stage_complete",
-                    "stage": node_name,
-                    "data": stage_data
+                    "stage": stage_label,
+                    "data": stage_payload
                 }, default=pydantic_encoder) + "\n"
 
     except Exception as e:
         stream_logger.error(f"[{trace_id}] Stream failed at {current_stage}: {e}")
         yield _build_error_payload(str(e), current_stage)
         return
+
+    # Adapter가 실행되지 않은 경우(예외적) stage02 버퍼 flush
+    if buffered_stage02 and not emitted_stage02:
+        yield json.dumps({
+            "event": "stage_complete",
+            "stage": "stage02_querygen",
+            "data": buffered_stage02
+        }, default=pydantic_encoder) + "\n"
 
     # 최종 결과 전송
     final_response = _build_response(final_state, trace_id)

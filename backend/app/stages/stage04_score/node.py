@@ -34,7 +34,7 @@ def run(state: dict) -> dict:
             "title": cand.get("title", "") or "",
             "content": cand.get("content", "") or "",
             "dist": (cand.get("metadata") or {}).get("dist"),         # Only Wiki has this
-            "lex_score": (cand.get("metadata") or {}).get("lex_score") # Only Wiki has this
+            "lex_score": (cand.get("metadata") or {}).get("lex_score") or 0.0 # Only Wiki has this
         }
 
         # Calculate Score

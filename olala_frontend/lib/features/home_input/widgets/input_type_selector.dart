@@ -101,8 +101,8 @@ class _Segment extends StatelessWidget {
         child: InkWell(
           borderRadius: _radius,
           onTap: onTap,
-          overlayColor: MaterialStateProperty.resolveWith((states) {
-            if (states.contains(MaterialState.pressed)) {
+          overlayColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.pressed)) {
               return Colors.black.withOpacity(0.06); // ✅ 눌림 피드백
             }
             return null;

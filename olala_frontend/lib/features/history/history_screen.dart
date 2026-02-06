@@ -4,6 +4,8 @@ import 'package:phosphor_flutter/phosphor_flutter.dart';
 
 import 'history_controller.dart';
 import 'widgets/history_list_item.dart';
+import '../verify/presentation/result_controller.dart';
+import '../verify/presentation/result_screen.dart';
 
 import '../shell/shell_controller.dart';
 import '../settings/settings_screen.dart';
@@ -153,7 +155,16 @@ class HistoryScreen extends StatelessWidget {
                 item: item,
                 onDelete: () => c.removeById(item.id),
                 onTap: () {
-                  // TODO: Result_UI 연결
+                  // Connect to Result_UI
+                  final resultController = Get.isRegistered<ResultController>()
+                      ? Get.find<ResultController>()
+                      : Get.put(ResultController());
+                  
+                  resultController.loadFromHistory(item);
+                  
+                  // Navigate to Result Screen
+                  // Prevent back button from going back to loading state if any
+                  Get.to(() => const ResultScreen());
                 },
               );
             },

@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s:%(name)s:%(message
 
 def test_pipeline_s1_s2():
     # YouTube URL containing the target claim
-    url = "https://www.youtube.com/watch?v=YTv8xPurZfk"
+    url = "https://www.youtube.com/watch?v=YK0yDVogCm4"
     
     initial_state = {
         "trace_id": "test-s1-s2-verify",

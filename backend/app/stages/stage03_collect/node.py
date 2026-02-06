@@ -34,9 +34,9 @@ async def _search_wiki(query: str, search_mode: str) -> List[Dict[str, Any]]:
                 return retrieve_wiki_hits(
                     db=db,
                     question=query,
-                    top_k=5,         
+                    top_k=2,         
                     window=2,        
-                    page_limit=10,
+                    page_limit=2,
                     embed_missing=True,
                     search_mode=search_mode
                 )
@@ -76,6 +76,8 @@ async def _search_naver(query: str) -> List[Dict[str, Any]]:
         safe_query = (query or "").strip()
         if len(safe_query) > 100:
             safe_query = safe_query[:100]
+        print(f"[DEBUG Naver] query='{safe_query}'")
+        logger.info("Naver query=%s", safe_query)
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": client_id,
@@ -85,10 +87,16 @@ async def _search_naver(query: str) -> List[Dict[str, Any]]:
         
         # Offload sync HTTP request
         resp = await asyncio.to_thread(requests.get, url, headers=headers, params=params)
+        print(f"[DEBUG Naver] status={resp.status_code}")
+        logger.info("Naver status=%s", resp.status_code)
         
         if resp.status_code == 200:
             data = resp.json()
-            for item in data.get("items", []):
+            items = data.get("items", [])
+            print(f"[DEBUG Naver] items={len(items)}")
+            if not items:
+                logger.warning("Naver returned 0 items for query='%s'", safe_query)
+            for item in items:
                 # Clean html tags from title/description if needed
                 title = item["title"].replace("<b>", "").replace("</b>", "").replace("&quot;", "\"")
                 desc = item["description"].replace("<b>", "").replace("</b>", "").replace("&quot;", "\"")
@@ -101,7 +109,7 @@ async def _search_naver(query: str) -> List[Dict[str, Any]]:
                     "metadata": {"origin": "naver", "pub_date": item.get("pubDate")}
                 })
         else:
-            logger.error(f"Naver API Error: {resp.status_code} {resp.text}")
+            logger.error(f"Naver API Error: {resp.status_code} {resp.text[:200]}")
             
     except Exception as e:
         logger.error(f"Naver Search Failed for '{query}': {e}")
@@ -112,6 +120,8 @@ async def _search_duckduckgo(query: str) -> List[Dict[str, Any]]:
     """Execute DuckDuckGo Search."""
     results = []
     try:
+        print(f"[DEBUG DDG] query='{(query or '').strip()}'")
+        logger.info("DDG query=%s", (query or "").strip())
         # DDGS is synchronous
         def _sync_ddg():
             with DDGS() as ddgs:
@@ -119,6 +129,8 @@ async def _search_duckduckgo(query: str) -> List[Dict[str, Any]]:
                 return list(ddgs.text(query, max_results=10))
 
         ddg_results = await asyncio.to_thread(_sync_ddg)
+        print(f"[DEBUG DDG] results={len(ddg_results)}")
+        logger.info("DDG results=%d", len(ddg_results))
         
         for r in ddg_results:
             results.append({
@@ -135,13 +147,47 @@ async def _search_duckduckgo(query: str) -> List[Dict[str, Any]]:
     return results
 
 def _extract_queries(state: dict) -> list:
-    search_queries = state.get("search_queries", [])
-    if not search_queries:
-        search_queries = state.get("query_variants", [])
-    if not search_queries:
-        fallback = state.get("claim_text") or state.get("input_payload")
-        if fallback:
-            search_queries = [fallback]
+    def _coerce_query_item(item: Any) -> Dict[str, Any] | None:
+        if isinstance(item, dict):
+            return item
+        if hasattr(item, "model_dump"):
+            return item.model_dump()
+        if hasattr(item, "dict"):
+            return item.dict()
+        if hasattr(item, "to_dict"):
+            return item.to_dict()
+        if isinstance(item, str):
+            return {"type": "direct", "text": item}
+        return None
+
+    raw_queries = state.get("search_queries", [])
+    if raw_queries:
+        search_queries = [q for q in (_coerce_query_item(i) for i in raw_queries) if q]
+    else:
+        raw_variants = state.get("query_variants", [])
+        search_queries = [q for q in (_coerce_query_item(i) for i in raw_variants) if q]
+        if not search_queries:
+            fallback = state.get("claim_text") or state.get("input_payload")
+            if fallback:
+                search_queries = [{"type": "direct", "text": fallback}]
+    
+    print(f"[DEBUG Extract Queries] Found {len(search_queries)} queries")
+    logger.info(f"[Extract Queries] Found {len(search_queries)} queries")
+    for i, q in enumerate(search_queries):
+        if isinstance(q, dict):
+            msg = f"[Extract Queries] Query {i}: type={q.get('type')}, text='{q.get('text', '')[:50]}'"
+            print(f"[DEBUG {msg}]")
+            logger.info(msg)
+        else:
+            msg = f"[Extract Queries] Query {i}: (string) '{str(q)[:50]}'"
+            print(f"[DEBUG {msg}]")
+            logger.info(msg)
+    
+    # NOTE: keyword_bundles auto-addition removed
+    # It was creating noise by searching for compound terms like "백신 관련주"
+    # that don't have dedicated wiki pages
+    # LLM should generate precise wiki queries only
+    
     return search_queries
 
 async def _safe_execute(coro, timeout=10.0, name="Task"):
@@ -154,57 +200,95 @@ async def _safe_execute(coro, timeout=10.0, name="Task"):
         logger.error(f"Task Error ({name}): {e}")
         return []
 
-def _normalize_wiki_query(text: str) -> str:
+def _normalize_wiki_query(text: str) -> List[str]:
+    """
+    위키 쿼리 정규화: LLM이 생성한 표제어를 정제.
+    - 불필요한 조사/접미사 제거
+    - 복합어 분리 (필요시)
+    """
     if not text:
-        return text
-    # Split on commas, ampersands, or 'and' variants, then join with AND for wiki search
-    parts = re.split(r"\s*(?:,|&|\band\b|\bAND\b)\s*", text)
-    terms = [p.strip() for p in parts if p.strip()]
-    if len(terms) >= 2:
-        return " & ".join(terms)
-    return text.strip()
+        return []
+    
+    # 1. 구분자로 분리 (쉼표, &)
+    parts = re.split(r"\s*[,&]\s*", text)
+    
+    # 2. 각 파트 정제
+    terms = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        
+        # 한글 조사 제거 (예: "니파바이러스의" -> "니파바이러스")
+        p = re.sub(r"(의|에|를|을|이|가|은|는|와|과|로|으로)$", "", p)
+        
+        # 너무 긴 복합어 감지 (20자 이상) - 경고만 출력
+        if len(p) > 20:
+            logger.warning(f"Wiki query too long (likely compound term): '{p}'")
+        
+        terms.append(p.strip())
+    
+    return terms if terms else [text.strip()]
 
 
 async def run_wiki_async(state: dict) -> dict:
     """Execute Only Wiki Search (async)."""
     search_queries = _extract_queries(state)
-    search_mode = state.get("search_mode", "fts")
+    search_mode = state.get("search_mode", "lexical")
 
     tasks = []
-    wiki_inputs = []
+    wiki_inputs: Dict[str, str] = {}
+    
+    print(f"[DEBUG Wiki Search] Total queries: {len(search_queries)}")
+    logger.info(f"[Wiki Search] Total queries: {len(search_queries)}")
+    
     for q in search_queries:
         text = q if isinstance(q, str) else q.get("text", "")
         qtype = "direct" if isinstance(q, str) else q.get("type", "direct")
+        if not isinstance(q, str) and hasattr(qtype, "value"):
+            qtype = qtype.value
+        qtype = str(qtype).lower().strip()
+        q_search_mode = search_mode if isinstance(q, str) else q.get("search_mode", search_mode)
+        
+        print(f"[DEBUG Wiki Search] Processing query: type={qtype}, text='{text}'")
+        logger.info(f"[Wiki Search] Processing query: type={qtype}, text='{text}'")
+        
         if not text:
             continue
 
-        if qtype in ("wiki", "verification", "direct"):
-            if "wiki" in qtype or "wiki" in str(q).lower():
-                wiki_inputs.append(_normalize_wiki_query(text))
-            elif qtype == "direct":
-                wiki_inputs.append(_normalize_wiki_query(text))
+        # Only process queries explicitly marked as "wiki" type
+        if qtype == "wiki":
+            normalized = _normalize_wiki_query(text)
+            print(f"[DEBUG Wiki Search] Normalized '{text}' → {normalized}")
+            logger.info(f"[Wiki Search] Normalized '{text}' → {normalized}")
+            for term in normalized:
+                if term and term not in wiki_inputs:
+                    wiki_inputs[term] = q_search_mode
 
-    wiki_inputs = list(set(wiki_inputs))
+    wiki_input_list = list(wiki_inputs.keys())
+    print(f"[DEBUG Wiki Search] Final wiki_inputs: {wiki_input_list}")
+    logger.info(f"[Wiki Search] Final wiki_inputs: {wiki_input_list}")
 
     if wiki_inputs:
-        if len(wiki_inputs) > 1:
-            combined = " & ".join(wiki_inputs)
-            tasks.append(_safe_execute(_search_wiki(combined, search_mode), 60.0, "Wiki-AND"))
-        else:
-            tasks.append(_safe_execute(_search_wiki(wiki_inputs[0], search_mode), 60.0, "Wiki-Single"))
+        # Run parallel searches (Union strategy)
+        # Using " & " (AND) logic forces a single page to cover ALL topics, which is too restrictive.
+        # Queries like "Bitcoin Price" and "Geopolitics" should be separate searches.
+        for term, mode in wiki_inputs.items():
+             tasks.append(_safe_execute(_search_wiki(term, mode), 600.0, f"Wiki-Query:{term[:10]}"))
+    else:
+        print("[DEBUG Wiki Search] No wiki inputs - skipping search")
 
     results = await asyncio.gather(*tasks)
     flat = [item for sublist in results for item in sublist]
 
-    # Fallback: AND 결과가 없으면 단일 쿼리로 재시도
-    if not flat and len(wiki_inputs) > 1:
-        logger.info("Stage 3 (Wiki) AND=0, fallback to single-term searches")
-        retry_tasks = [
-            _safe_execute(_search_wiki(term, search_mode), 60.0, f"Wiki-Term:{term[:12]}")
-            for term in wiki_inputs
-        ]
-        retry_results = await asyncio.gather(*retry_tasks)
-        flat = [item for sublist in retry_results for item in sublist]
+    # Deduplicate by Page ID (since multiple queries might find same page)
+    unique_map = {}
+    for item in flat:
+        pid = item["metadata"]["page_id"]
+        if pid not in unique_map:
+            unique_map[pid] = item
+    
+    flat = list(unique_map.values())
 
     logger.info(f"Stage 3 (Wiki) Complete. Found {len(flat)}")
     return {"wiki_candidates": flat}
@@ -229,6 +313,9 @@ async def run_web_async(state: dict) -> dict:
     for q in search_queries:
         text = q if isinstance(q, str) else q.get("text", "")
         qtype = "direct" if isinstance(q, str) else q.get("type", "direct")
+        if not isinstance(q, str) and hasattr(qtype, "value"):
+            qtype = qtype.value
+        qtype = str(qtype).lower().strip()
         if not text:
             continue
 
@@ -335,6 +422,10 @@ def run_merge(state: dict) -> dict:
     logger.info(f"Stage 3 (Merge) Complete. Total {len(all_candidates)} candidates (Filtered {len(raw_candidates) - len(all_candidates)}).")
     return {
         "evidence_candidates": all_candidates,
+        "wiki_candidates": None,
+        "web_candidates": None,
+        "search_queries": None,  # queries are no longer needed
+        "query_variants": None   # variants are no longer needed
     }
 
 # Legacy run for compatibility if needed (wraps all)

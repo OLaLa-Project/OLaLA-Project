@@ -1,0 +1,30 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: olala-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: olala
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./storage/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d olala"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: olala-ollama
+    restart: unless-stopped
+    network_mode: "host"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ./storage/ollama:/root/.ollama
+    # gpus: all  <-- 여기를 주석 처리! (#을 붙이세요)
