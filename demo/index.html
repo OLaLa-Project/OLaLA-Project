@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OLaLA Demo Console</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div>
+        <h1>OLaLA Demo Console</h1>
+        <p class="subtitle">Backend validation (Stage 1-9)</p>
+      </div>
+      <div class="trace">
+        <div class="label">Trace ID</div>
+        <div id="traceId" class="value">-</div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="card">
+        <h2>Inputs</h2>
+        <div class="grid">
+          <label>
+            Input Type
+            <select id="inputType">
+              <option value="url">url</option>
+              <option value="text">text</option>
+            </select>
+          </label>
+          <label id="urlRow">
+            URL
+            <input id="urlInput" type="text" placeholder="https://..." />
+          </label>
+          <label id="textRow" class="hidden">
+            Text Input
+            <textarea id="textInput" rows="3" placeholder="Enter claim text..."></textarea>
+          </label>
+          <label>
+            User Request
+            <textarea id="requestInput" rows="3" placeholder="Optional user request"></textarea>
+          </label>
+          <label>
+            As Of
+            <input id="asOfInput" type="text" placeholder="YYYY-MM-DD or null" />
+          </label>
+          <label>
+            Language
+            <select id="languageInput">
+              <option value="ko">ko</option>
+              <option value="en">en</option>
+            </select>
+          </label>
+          <label>
+            Normalize Mode
+            <select id="normalizeModeInput">
+              <option value="">(null)</option>
+              <option value="llm">llm</option>
+              <option value="basic">basic</option>
+            </select>
+          </label>
+          <label>
+            Querygen Prompt (optional)
+            <textarea id="querygenPromptInput" rows="3" placeholder="Custom prompt text"></textarea>
+          </label>
+          <label>
+            Start Stage (ignored by backend)
+            <input id="startStageInput" type="text" value="Stage1" disabled />
+          </label>
+          <label>
+            End Stage (ignored by backend)
+            <input id="endStageInput" type="text" value="Stage9" disabled />
+          </label>
+          <label>
+            Include Full Outputs
+            <input id="includeFullOutputs" type="checkbox" />
+          </label>
+          <label>
+            API Base URL
+            <input id="apiBaseInput" type="text" value="http://localhost:8080" />
+          </label>
+        </div>
+        <div class="note">Start/end stage are accepted but ignored by the backend. The pipeline always runs Stage 1-9.</div>
+        <div class="actions">
+          <button id="runBtn">Run</button>
+          <button id="compareBtn" disabled>Compare with previous</button>
+        </div>
+        <div id="inputError" class="error hidden"></div>
+      </section>
+
+      <section class="card">
+        <h2>Timeline</h2>
+        <div id="timeline" class="timeline"></div>
+      </section>
+
+      <section class="card">
+        <h2>Stage Outputs</h2>
+        <div id="stageOutputs" class="stage-list"></div>
+      </section>
+
+      <section class="card">
+        <h2>Final Result (Stage9)</h2>
+        <div id="finalResult" class="final"></div>
+      </section>
+
+      <section class="card">
+        <h2>Error / Logs</h2>
+        <div id="errorBox" class="error-box hidden"></div>
+        <pre id="rawLogs" class="code"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Diff (previous run)</h2>
+        <div id="diffBox" class="diff-box"></div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

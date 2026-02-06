@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.*
+
+# Flutter / Dart
+.dart_tool/
+.buildlog/
+build/
+*.iml
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+
+# Models / data
+checkpoints/
+*.safetensors
+*.bin
+
+# Logs
+*.log
+
+# Docker/Runtime
+storage/
+*.sqlite
+*.db
+.wiki/
+.vscode/
+.claude/
+.github/
