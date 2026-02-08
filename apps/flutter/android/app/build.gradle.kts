@@ -10,7 +10,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.olala_frontend"
+    namespace = "com.olala.beta.one"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
