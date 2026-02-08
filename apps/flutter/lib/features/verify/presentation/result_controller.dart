@@ -27,12 +27,16 @@ class ResultController extends GetxController {
   // Repository (FastAPI 백엔드 연동 준비)
   // ─────────────────────────────────────────
   late final VerifyRepository _repository;
+  static const bool _enableMockFallback = bool.fromEnvironment(
+    'ENABLE_MOCK_FALLBACK',
+    defaultValue: false,
+  );
 
   ResultController({VerifyRepository? repository})
       : _repository = repository ??
             ApiVerifyRepository(
               baseUrl: ApiEndpoints.apiBase,
-              fallback: MockVerifyRepository(),
+              fallback: _enableMockFallback ? MockVerifyRepository() : null,
             );
   static const Size _shareImageSize = Size(800, 1400);
   static const Duration _shareRenderDelay = Duration(seconds: 1);

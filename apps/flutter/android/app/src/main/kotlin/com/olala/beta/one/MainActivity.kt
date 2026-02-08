@@ -1,4 +1,4 @@
-package com.example.olala_frontend
+package com.olala.beta.one
 
 import io.flutter.embedding.android.FlutterActivity
 

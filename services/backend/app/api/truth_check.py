@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/truth/check", response_model=TruthCheckResponse)
+@router.post("/v1/truth/check", response_model=TruthCheckResponse)
 def truth_check(req: TruthCheckRequest, db: Session = Depends(get_db)) -> TruthCheckResponse:
     try:
         result = run_pipeline(req)
@@ -41,6 +42,7 @@ def truth_check(req: TruthCheckRequest, db: Session = Depends(get_db)) -> TruthC
 
 
 @router.post("/api/truth/check/stream")
+@router.post("/v1/api/truth/check/stream")
 async def truth_check_stream(req: TruthCheckRequest):
     """
     Streaming version of truth_check that yields stage completion events.
