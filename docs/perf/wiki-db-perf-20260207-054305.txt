@@ -1,0 +1,124 @@
+# Wiki DB Performance Report
+generated_at=2026-02-07T05:43:05+09:00
+query=코로나
+
+## table stats
+   relname   |  rows   | total_size 
+-------------+---------+------------
+ wiki_chunks | 1005556 | 1997 MB
+ wiki_pages  | 1599603 | 323 MB
+(2 rows)
+
+
+## embedding coverage
+ emb_nonnull |  total  
+-------------+---------
+           0 | 1002975
+(1 row)
+
+
+## explain title_ilike
+                                                                    QUERY PLAN                                                                     
+---------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=615.83..615.88 rows=20 width=28) (actual time=8.408..8.410 rows=20 loops=1)
+   Buffers: shared hit=366
+   ->  Sort  (cost=615.83..616.23 rows=160 width=28) (actual time=8.407..8.408 rows=20 loops=1)
+         Sort Key: page_id
+         Sort Method: top-N heapsort  Memory: 27kB
+         Buffers: shared hit=366
+         ->  Bitmap Heap Scan on wiki_pages  (cost=22.20..611.57 rows=160 width=28) (actual time=0.305..8.231 rows=1069 loops=1)
+               Recheck Cond: ((title)::text ~~* '%코로나%'::text)
+               Heap Blocks: exact=359
+               Buffers: shared hit=363
+               ->  Bitmap Index Scan on ix_wiki_pages_title_trgm  (cost=0.00..22.16 rows=160 width=0) (actual time=0.256..0.256 rows=1069 loops=1)
+                     Index Cond: ((title)::text ~~* '%코로나%'::text)
+                     Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=160
+ Planning Time: 3.058 ms
+ Execution Time: 8.517 ms
+(17 rows)
+
+
+## explain chunk_fts_candidate_cte
+                                                                                        QUERY PLAN                                                                                         
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=18057.67..18057.82 rows=20 width=28) (actual time=62.789..63.114 rows=20 loops=1)
+   Buffers: shared hit=2416 read=14
+   ->  Unique  (cost=18057.67..18059.17 rows=200 width=28) (actual time=62.788..63.112 rows=20 loops=1)
+         Buffers: shared hit=2416 read=14
+         ->  Sort  (cost=18057.67..18058.17 rows=200 width=28) (actual time=62.788..63.107 rows=22 loops=1)
+               Sort Key: c.page_id, p.title
+               Sort Method: quicksort  Memory: 35kB
+               Buffers: shared hit=2416 read=14
+               ->  Nested Loop  (cost=17644.66..18050.03 rows=200 width=28) (actual time=52.723..63.025 rows=200 loops=1)
+                     Buffers: shared hit=2410 read=14
+                     ->  Limit  (cost=17644.22..17667.56 rows=200 width=12) (actual time=52.608..52.994 rows=200 loops=1)
+                           Buffers: shared hit=1788
+                           ->  Gather Merge  (cost=17644.22..18097.15 rows=3882 width=12) (actual time=52.607..52.976 rows=200 loops=1)
+                                 Workers Planned: 2
+                                 Workers Launched: 2
+                                 Buffers: shared hit=1788
+                                 ->  Sort  (cost=16644.20..16649.05 rows=1941 width=12) (actual time=49.721..49.729 rows=146 loops=3)
+                                       Sort Key: (ts_rank_cd(to_tsvector('simple'::regconfig, c.content), '''코로나'''::tsquery)) DESC
+                                       Sort Method: quicksort  Memory: 40kB
+                                       Buffers: shared hit=1788
+                                       Worker 0:  Sort Method: quicksort  Memory: 40kB
+                                       Worker 1:  Sort Method: quicksort  Memory: 39kB
+                                       ->  Parallel Bitmap Heap Scan on wiki_chunks c  (cost=54.20..16560.31 rows=1941 width=12) (actual time=0.730..49.615 rows=384 loops=3)
+                                             Recheck Cond: (to_tsvector('simple'::regconfig, content) @@ '''코로나'''::tsquery)
+                                             Heap Blocks: exact=333
+                                             Buffers: shared hit=1772
+                                             ->  Bitmap Index Scan on ix_wiki_chunks_content_fts_simple  (cost=0.00..53.04 rows=4659 width=0) (actual time=0.824..0.825 rows=1152 loops=1)
+                                                   Index Cond: (to_tsvector('simple'::regconfig, content) @@ '''코로나'''::tsquery)
+                                                   Buffers: shared hit=6
+                     ->  Memoize  (cost=0.44..8.39 rows=1 width=28) (actual time=0.050..0.050 rows=1 loops=200)
+                           Cache Key: c.page_id
+                           Cache Mode: logical
+                           Hits: 41  Misses: 159  Evictions: 0  Overflows: 0  Memory Usage: 22kB
+                           Buffers: shared hit=622 read=14
+                           ->  Index Scan using wiki_pages_pkey on wiki_pages p  (cost=0.43..8.38 rows=1 width=28) (actual time=0.061..0.061 rows=1 loops=159)
+                                 Index Cond: (page_id = c.page_id)
+                                 Buffers: shared hit=622 read=14
+ Planning:
+   Buffers: shared hit=338
+ Planning Time: 2.860 ms
+ Execution Time: 63.324 ms
+(41 rows)
+
+
+## explain fetch_window
+                                                                  QUERY PLAN                                                                  
+----------------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using ix_wiki_chunks_page_chunk_idx on wiki_chunks  (cost=0.42..20.43 rows=4 width=820) (actual time=0.125..0.125 rows=0 loops=1)
+   Index Cond: ((page_id = 12) AND (chunk_idx >= 0) AND (chunk_idx <= 5))
+   Buffers: shared hit=6
+ Planning:
+   Buffers: shared hit=208
+ Planning Time: 0.711 ms
+ Execution Time: 0.146 ms
+(7 rows)
+
+
+## explain vector_search_topk (if embeddings exist)
+DO
+ vector_check 
+--------------
+ SKIPPED
+(1 row)
+
+
+## index list
+             indexname             |                                                           indexdef                                                            
+-----------------------------------+-------------------------------------------------------------------------------------------------------------------------------
+ ix_wiki_chunks_chunk_idx          | CREATE INDEX ix_wiki_chunks_chunk_idx ON public.wiki_chunks USING btree (chunk_idx)
+ ix_wiki_chunks_content_fts_simple | CREATE INDEX ix_wiki_chunks_content_fts_simple ON public.wiki_chunks USING gin (to_tsvector('simple'::regconfig, content))
+ ix_wiki_chunks_missing_embedding  | CREATE INDEX ix_wiki_chunks_missing_embedding ON public.wiki_chunks USING btree (page_id, chunk_id) WHERE (embedding IS NULL)
+ ix_wiki_chunks_page_chunk_idx     | CREATE INDEX ix_wiki_chunks_page_chunk_idx ON public.wiki_chunks USING btree (page_id, chunk_idx)
+ ix_wiki_chunks_page_id            | CREATE INDEX ix_wiki_chunks_page_id ON public.wiki_chunks USING btree (page_id)
+ wiki_chunks_pkey                  | CREATE UNIQUE INDEX wiki_chunks_pkey ON public.wiki_chunks USING btree (chunk_id)
+ ix_wiki_pages_title               | CREATE INDEX ix_wiki_pages_title ON public.wiki_pages USING btree (title)
+ ix_wiki_pages_title_trgm          | CREATE INDEX ix_wiki_pages_title_trgm ON public.wiki_pages USING gin (title gin_trgm_ops)
+ wiki_pages_pkey                   | CREATE UNIQUE INDEX wiki_pages_pkey ON public.wiki_pages USING btree (page_id)
+(9 rows)
+

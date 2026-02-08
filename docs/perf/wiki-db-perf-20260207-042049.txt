@@ -1,0 +1,97 @@
+# Wiki DB Performance Report
+generated_at=2026-02-07T04:20:49+09:00
+query=코로나
+
+## table stats
+   relname   |  rows   | total_size 
+-------------+---------+------------
+ wiki_chunks | 1005556 | 1997 MB
+ wiki_pages  | 1599603 | 323 MB
+(2 rows)
+
+
+## embedding coverage
+ emb_nonnull |  total  
+-------------+---------
+           0 | 1002975
+(1 row)
+
+
+## explain title_ilike
+                                                                    QUERY PLAN                                                                     
+---------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=615.83..615.88 rows=20 width=28) (actual time=3.129..3.131 rows=20 loops=1)
+   Buffers: shared hit=4 read=362
+   ->  Sort  (cost=615.83..616.23 rows=160 width=28) (actual time=3.128..3.129 rows=20 loops=1)
+         Sort Key: page_id
+         Sort Method: top-N heapsort  Memory: 27kB
+         Buffers: shared hit=4 read=362
+         ->  Bitmap Heap Scan on wiki_pages  (cost=22.20..611.57 rows=160 width=28) (actual time=0.173..3.002 rows=1069 loops=1)
+               Recheck Cond: ((title)::text ~~* '%코로나%'::text)
+               Heap Blocks: exact=359
+               Buffers: shared hit=1 read=362
+               ->  Bitmap Index Scan on ix_wiki_pages_title_trgm  (cost=0.00..22.16 rows=160 width=0) (actual time=0.124..0.125 rows=1069 loops=1)
+                     Index Cond: ((title)::text ~~* '%코로나%'::text)
+                     Buffers: shared hit=1 read=3
+ Planning:
+   Buffers: shared hit=151 read=9 dirtied=1
+ Planning Time: 2.469 ms
+ Execution Time: 3.214 ms
+(17 rows)
+
+
+## explain chunk_fts_candidate
+                                                                                 QUERY PLAN                                                                                 
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=165.61..3433.96 rows=20 width=28) (actual time=3636.127..3636.139 rows=20 loops=1)
+   Buffers: shared hit=23495 read=9942
+   ->  Unique  (cost=165.61..761527.82 rows=4659 width=28) (actual time=3636.126..3636.135 rows=20 loops=1)
+         Buffers: shared hit=23495 read=9942
+         ->  Incremental Sort  (cost=165.61..761504.52 rows=4659 width=28) (actual time=3636.125..3636.127 rows=23 loops=1)
+               Sort Key: p.page_id, p.title
+               Presorted Key: p.page_id
+               Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 26kB  Peak Memory: 26kB
+               Buffers: shared hit=23495 read=9942
+               ->  Nested Loop  (cost=0.85..761296.20 rows=4659 width=28) (actual time=272.973..3636.032 rows=34 loops=1)
+                     Buffers: shared hit=23489 read=9942
+                     ->  Index Scan using ix_wiki_chunks_page_id on wiki_chunks c  (cost=0.42..729294.94 rows=4659 width=8) (actual time=272.594..3627.823 rows=34 loops=1)
+                           Filter: (to_tsvector('simple'::regconfig, content) @@ '''코로나'''::tsquery)
+                           Rows Removed by Filter: 31260
+                           Buffers: shared hit=23404 read=9891
+                     ->  Index Scan using wiki_pages_pkey on wiki_pages p  (cost=0.43..6.87 rows=1 width=28) (actual time=0.236..0.236 rows=1 loops=34)
+                           Index Cond: (page_id = c.page_id)
+                           Buffers: shared hit=85 read=51
+ Planning:
+   Buffers: shared hit=322 read=7
+ Planning Time: 2.305 ms
+ Execution Time: 3636.239 ms
+(22 rows)
+
+
+## explain fetch_window
+                                                                  QUERY PLAN                                                                  
+----------------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using ix_wiki_chunks_page_chunk_idx on wiki_chunks  (cost=0.42..20.43 rows=4 width=820) (actual time=0.021..0.021 rows=0 loops=1)
+   Index Cond: ((page_id = 12) AND (chunk_idx >= 0) AND (chunk_idx <= 5))
+   Buffers: shared hit=6
+ Planning:
+   Buffers: shared hit=207 read=3
+ Planning Time: 3.226 ms
+ Execution Time: 0.046 ms
+(7 rows)
+
+
+## index list
+             indexname             |                                                           indexdef                                                            
+-----------------------------------+-------------------------------------------------------------------------------------------------------------------------------
+ ix_wiki_chunks_chunk_idx          | CREATE INDEX ix_wiki_chunks_chunk_idx ON public.wiki_chunks USING btree (chunk_idx)
+ ix_wiki_chunks_content_fts_simple | CREATE INDEX ix_wiki_chunks_content_fts_simple ON public.wiki_chunks USING gin (to_tsvector('simple'::regconfig, content))
+ ix_wiki_chunks_missing_embedding  | CREATE INDEX ix_wiki_chunks_missing_embedding ON public.wiki_chunks USING btree (page_id, chunk_id) WHERE (embedding IS NULL)
+ ix_wiki_chunks_page_chunk_idx     | CREATE INDEX ix_wiki_chunks_page_chunk_idx ON public.wiki_chunks USING btree (page_id, chunk_idx)
+ ix_wiki_chunks_page_id            | CREATE INDEX ix_wiki_chunks_page_id ON public.wiki_chunks USING btree (page_id)
+ wiki_chunks_pkey                  | CREATE UNIQUE INDEX wiki_chunks_pkey ON public.wiki_chunks USING btree (chunk_id)
+ ix_wiki_pages_title               | CREATE INDEX ix_wiki_pages_title ON public.wiki_pages USING btree (title)
+ ix_wiki_pages_title_trgm          | CREATE INDEX ix_wiki_pages_title_trgm ON public.wiki_pages USING gin (title gin_trgm_ops)
+ wiki_pages_pkey                   | CREATE UNIQUE INDEX wiki_pages_pkey ON public.wiki_pages USING btree (page_id)
+(9 rows)
+

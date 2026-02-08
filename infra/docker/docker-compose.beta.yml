@@ -1,0 +1,78 @@
+services:
+  wiki-db:
+    image: pgvector/pgvector:pg17
+    container_name: olala-wiki-db
+    restart: unless-stopped
+    env_file:
+      - ../../.env.beta
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-olala}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - wiki-db-data:/var/lib/postgresql/data
+      - ../../data/wiki_db_dump_file:/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-olala}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: olala-ollama
+    restart: unless-stopped
+    profiles: ["llm"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+  backend:
+    build:
+      context: ../../services/backend
+    container_name: olala-backend
+    restart: unless-stopped
+    env_file:
+      - ../../.env.beta
+    environment:
+      DB_HOST: ${DB_HOST:-wiki-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-olala}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DATABASE_URL: ${DATABASE_URL:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5175,http://127.0.0.1:5175}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      EMBED_DIM: ${EMBED_DIM:-768}
+      WIKI_EMBEDDINGS_READY: ${WIKI_EMBEDDINGS_READY:-false}
+      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://ollama:11434}
+      SLM1_API_KEY: ${SLM1_API_KEY:-ollama}
+      SLM1_MODEL: ${SLM1_MODEL:-gemma3:4b}
+      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://ollama:11434}
+      SLM2_API_KEY: ${SLM2_API_KEY:-ollama}
+      SLM2_MODEL: ${SLM2_MODEL:-gemma3:4b}
+      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://ollama:11434}
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-ollama}
+      JUDGE_MODEL: ${JUDGE_MODEL:-gemma3:4b}
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    depends_on:
+      wiki-db:
+        condition: service_healthy
+
+networks:
+  default:
+    name: olala-beta-net
+
+volumes:
+  wiki-db-data:
+  ollama-data:

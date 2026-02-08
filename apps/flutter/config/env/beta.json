@@ -1,0 +1,5 @@
+{
+  "APP_ENV": "beta",
+  "API_BASE": "https://beta-api.olala.com/v1",
+  "WS_BASE": "wss://beta-api.olala.com/v1"
+}

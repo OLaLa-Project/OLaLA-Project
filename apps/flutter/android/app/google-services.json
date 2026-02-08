@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "288602230546",
+    "project_id": "olala-beta-1",
+    "storage_bucket": "olala-beta-1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:288602230546:android:02db672cc8e0b4b3572dcb",
+        "android_client_info": {
+          "package_name": "com.olala.beta.one"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAhw0VZmvRm9iYTnlRE6RaHmP8HUXYUO9g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

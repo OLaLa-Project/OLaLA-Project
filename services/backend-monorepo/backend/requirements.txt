@@ -1,0 +1,15 @@
+fastapi==0.111.0
+uvicorn==0.30.0
+pydantic==2.7.1
+pydantic-settings==2.2.1
+python-dotenv==1.0.1
+requests==2.31.0
+sqlalchemy==2.0.30
+psycopg2-binary==2.9.9
+psutil==5.9.8
+pgvector==0.3.6
+trafilatura>=1.6.0
+duckduckgo-search>=5.0.0
+langgraph>=0.0.40
+numpy>=1.26.0
+youtube-transcript-api>=0.6.2

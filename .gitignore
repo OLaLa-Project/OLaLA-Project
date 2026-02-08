@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.runtime/
+node_modules/
+.vscode/
+data/wiki_db_dump_file/
+releases/beta/
+*.apk
+*.aab
+*.ipa
