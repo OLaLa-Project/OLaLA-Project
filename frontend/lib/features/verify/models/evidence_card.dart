@@ -30,12 +30,27 @@ class EvidenceCard {
 
     String? toStr(dynamic v) => v?.toString();
 
+    String? sourceFromUrl(dynamic v) {
+      final raw = toStr(v);
+      if (raw == null || raw.isEmpty) return null;
+      final uri = Uri.tryParse(raw);
+      final host = uri?.host ?? '';
+      if (host.isEmpty) return null;
+      return host;
+    }
+
     return EvidenceCard(
       title: toStr(json['title'] ?? json['headline']),
-      source: toStr(json['source'] ?? json['publisher'] ?? json['domain']),
+      source: toStr(
+        json['source'] ??
+            json['publisher'] ??
+            json['domain'] ??
+            json['source_type'] ??
+            sourceFromUrl(json['url'] ?? json['link']),
+      ),
       snippet: toStr(json['snippet'] ?? json['summary'] ?? json['quote']),
       url: toStr(json['url'] ?? json['link']),
-      score: toDouble(json['score'] ?? json['confidence']),
+      score: toDouble(json['score'] ?? json['relevance'] ?? json['confidence']),
       publishedAt: toStr(json['publishedAt'] ?? json['published_at'] ?? json['date']),
       stance: toStr(json['stance'] ?? json['polarity']),
     );

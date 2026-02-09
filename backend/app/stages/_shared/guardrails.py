@@ -10,7 +10,10 @@ Guardrails for SLM2 stages.
 import json
 import re
 import logging
+from difflib import SequenceMatcher
 from typing import Any, Callable, Optional, cast
+
+from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,245 @@ def normalize_json_text(text: str) -> str:
     return cleaned
 
 
+def _extract_json_array_body(text: str, key: str) -> str:
+    key_pattern = re.compile(rf'"{re.escape(key)}"\s*:', re.IGNORECASE)
+    key_match = key_pattern.search(text)
+    if not key_match:
+        return ""
+
+    start = text.find("[", key_match.end())
+    if start < 0:
+        return ""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "[":
+            depth += 1
+            continue
+        if ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : i]
+
+    # 배열 닫힘이 없으면 남은 텍스트를 반환(부분 복구 용도)
+    return text[start + 1 :]
+
+
+def _extract_json_object_body(text: str, key: str) -> str:
+    key_pattern = re.compile(rf'"{re.escape(key)}"\s*:', re.IGNORECASE)
+    key_match = key_pattern.search(text)
+    if not key_match:
+        return ""
+
+    start = text.find("{", key_match.end())
+    if start < 0:
+        return ""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : i]
+
+    return text[start + 1 :]
+
+
+def _extract_json_string_field(text: str, key: str) -> str:
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"', re.IGNORECASE)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    token = match.group(1)
+    try:
+        return cast(str, json.loads(f'"{token}"'))
+    except json.JSONDecodeError:
+        return token.replace('\\"', '"').replace("\\n", "\n")
+
+
+def _extract_json_number_field(text: str, key: str) -> Optional[float]:
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*(-?\d+(?:\.\d+)?)', re.IGNORECASE)
+    match = pattern.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _extract_json_string_list(text: str, key: str, max_items: int = 2) -> list[str]:
+    body = _extract_json_array_body(text, key)
+    if not body:
+        return []
+    items = []
+    for token in re.findall(r'"((?:\\.|[^"\\])*)"', body):
+        try:
+            value = cast(str, json.loads(f'"{token}"')).strip()
+        except json.JSONDecodeError:
+            value = token.strip()
+        if not value:
+            continue
+        items.append(value)
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def recover_partial_draft_verdict(text: str) -> dict[str, Any]:
+    """
+    잘린/불완전 JSON에서 DraftVerdict 핵심 필드를 최대한 복구.
+
+    Stage6/7에서 parse_json_safe 실패 후 보조 경로로 사용한다.
+    """
+    source = (text or "").strip()
+    if not source:
+        return {}
+
+    recovered: dict[str, Any] = {}
+
+    stance = _extract_json_string_field(source, "stance").upper().strip()
+    if stance in VALID_STANCES:
+        recovered["stance"] = stance
+
+    confidence = _extract_json_number_field(source, "confidence")
+    if confidence is not None:
+        recovered["confidence"] = confidence
+
+    reasoning = _extract_json_string_list(source, "reasoning_bullets", max_items=2)
+    if reasoning:
+        recovered["reasoning_bullets"] = reasoning
+
+    citation_obj = _extract_json_object_body(source, "citations")
+    citations: list[dict[str, Any]] = []
+    if citation_obj:
+        evid_id = _extract_json_string_field(citation_obj, "evid_id")
+        url = _extract_json_string_field(citation_obj, "url")
+        quote = _extract_json_string_field(citation_obj, "quote")
+        title = _extract_json_string_field(citation_obj, "title")
+        if evid_id or url or quote or title:
+            citation: dict[str, Any] = {}
+            if evid_id:
+                citation["evid_id"] = evid_id
+            if url:
+                citation["url"] = url
+            if quote:
+                citation["quote"] = quote
+            if title:
+                citation["title"] = title
+            citations.append(citation)
+    if citations:
+        recovered["citations"] = citations
+
+    weak_points = _extract_json_string_list(source, "weak_points", max_items=2)
+    if weak_points:
+        recovered["weak_points"] = weak_points
+    followups = _extract_json_string_list(source, "followup_queries", max_items=2)
+    if followups:
+        recovered["followup_queries"] = followups
+
+    if recovered:
+        recovered["_partial_recovered"] = True
+    return recovered
+
+
+def enrich_partial_citations_from_evidence(
+    raw: dict[str, Any],
+    evidence_topk: list[dict[str, Any]],
+    *,
+    min_quote_length: int = 10,
+    quote_max_chars: int = 140,
+) -> dict[str, Any]:
+    """
+    partial 복구 결과에서 비어있는 citation 필드를 evidence_topk로 최소 보완.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    citations = raw.get("citations")
+    if not isinstance(citations, list) or not citations:
+        return raw
+
+    evidence_map: dict[str, dict[str, Any]] = {}
+    for ev in evidence_topk:
+        evid_id = str(ev.get("evid_id") or "").strip()
+        if not evid_id:
+            continue
+        evidence_map[evid_id] = ev
+
+    if not evidence_map:
+        return raw
+
+    updated_citations: list[dict[str, Any]] = []
+    changed = False
+
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        item = dict(citation)
+        evid_id = str(item.get("evid_id") or "").strip()
+        if not evid_id or evid_id not in evidence_map:
+            updated_citations.append(item)
+            continue
+
+        evidence = evidence_map[evid_id]
+        snippet = str(evidence.get("snippet") or evidence.get("content") or "")
+        if not item.get("url"):
+            url = str(evidence.get("url") or "").strip()
+            if url:
+                item["url"] = url
+                changed = True
+        if not item.get("title"):
+            title = str(evidence.get("title") or "").strip()
+            if title:
+                item["title"] = title
+                changed = True
+        quote = str(item.get("quote") or "")
+        if len(quote.strip()) < min_quote_length and snippet.strip():
+            item["quote"] = snippet.strip()[:quote_max_chars]
+            changed = True
+
+        updated_citations.append(item)
+
+    if changed:
+        updated = dict(raw)
+        updated["citations"] = updated_citations
+        return updated
+    return raw
+
+
 def parse_json_safe(text: str) -> Optional[dict[str, Any]]:
     """
     안전한 JSON 파싱. 실패 시 None 반환.
@@ -83,41 +325,44 @@ def parse_json_with_retry(
     call_fn: Callable[[], str],
     retry_system_prompt: str = "이전 응답이 올바른 JSON 형식이 아닙니다. 반드시 유효한 JSON만 출력하세요. 다른 설명 없이 JSON만 출력하세요.",
     retry_call_fn: Optional[Callable[[str], str]] = None,
+    meta: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """
-    JSON 파싱 with 1회 재시도.
+    JSON 파싱 (최대 1회 재시도).
 
     Args:
-        call_fn: 첫 번째 SLM 호출 함수 (인자 없음, 문자열 반환)
-        retry_system_prompt: 재시도 시 사용할 시스템 프롬프트
-        retry_call_fn: 재시도 호출 함수 (시스템 프롬프트를 인자로 받음)
-                       None이면 call_fn을 다시 호출
+        call_fn: SLM 호출 함수 (인자 없음, 문자열 반환)
+        retry_system_prompt: 재시도용 시스템 프롬프트
+        retry_call_fn: 재시도 호출 함수
+        meta: 파싱 진단 정보 기록용 dict
 
     Returns:
-        파싱된 dict
-
-    Raises:
-        JSONParseError: 재시도 후에도 파싱 실패
+        파싱된 dict, 파싱 실패 시 빈 dict 반환
     """
-    # 첫 번째 시도
+    parse_meta = meta if isinstance(meta, dict) else {}
+
     response = call_fn()
-    result = parse_json_safe(response)
-
-    if result is not None:
-        return result
-
-    # 재시도
-    logger.info("JSON 파싱 실패, 1회 재시도")
-    if retry_call_fn:
-        response = retry_call_fn(retry_system_prompt)
-    else:
-        response = call_fn()
+    parse_meta["parse_retry_used"] = False
+    parse_meta["raw_len"] = len(response or "")
 
     result = parse_json_safe(response)
     if result is not None:
+        parse_meta["parse_ok"] = True
         return result
 
-    raise JSONParseError(f"JSON 파싱 실패 (재시도 후에도 실패): {response[:200]}...")
+    should_retry = bool(settings.stage67_json_retry_enabled) and callable(retry_call_fn)
+    if should_retry:
+        parse_meta["parse_retry_used"] = True
+        retry_response = retry_call_fn(retry_system_prompt)
+        parse_meta["retry_raw_len"] = len(retry_response or "")
+        retry_result = parse_json_safe(retry_response)
+        if retry_result is not None:
+            parse_meta["parse_ok"] = True
+            return retry_result
+
+    parse_meta["parse_ok"] = False
+    logger.warning("JSON 파싱 실패, 빈 dict 반환: %s", (response or "")[:200])
+    return {}
 
 
 class JSONParseError(Exception):
@@ -187,6 +432,9 @@ def validate_citations(
         if normalized_quote in normalized_source:
             validated.append(cit)
             logger.debug(f"Citation 검증 통과: evid_id={evid_id}")
+        elif _soft_match_quote(normalized_quote, normalized_source):
+            validated.append(cit)
+            logger.info("Citation 소프트 매치 통과: evid_id=%s", evid_id)
         else:
             logger.warning(f"Quote 검증 실패: evid_id={evid_id}, quote='{quote[:50]}...'")
 
@@ -194,9 +442,94 @@ def validate_citations(
     return validated
 
 
+def recover_citations_by_evid_id(
+    citations: list[dict],
+    evidence_topk: list[dict],
+    quote_max_chars: int = 160,
+) -> list[dict]:
+    """
+    quote 검증이 모두 실패한 경우, evid_id 매칭 기반으로 최소 citation을 복구.
+
+    2B 모델의 의역/문장절단으로 quote substring 검증이 실패할 때
+    evid_id가 유효하면 원문 snippet 일부를 quote로 대체해 완전 UNVERIFIED 연쇄를 줄인다.
+    """
+    if not citations or not evidence_topk:
+        return []
+
+    evidence_map: dict[str, dict[str, Any]] = {}
+    for ev in evidence_topk:
+        evid_id = str(ev.get("evid_id") or "").strip()
+        if evid_id:
+            evidence_map[evid_id] = ev
+
+    recovered: list[dict] = []
+    for cit in citations:
+        if not isinstance(cit, dict):
+            continue
+        evid_id = str(cit.get("evid_id") or "").strip()
+        if not evid_id or evid_id not in evidence_map:
+            continue
+
+        evidence = evidence_map[evid_id]
+        source_text = str(evidence.get("snippet") or evidence.get("content") or "").strip()
+        if not source_text:
+            continue
+
+        recovered.append(
+            {
+                "evid_id": evid_id,
+                "url": str(cit.get("url") or evidence.get("url") or ""),
+                "title": str(cit.get("title") or evidence.get("title") or ""),
+                "quote": source_text[:max(40, int(quote_max_chars))],
+            }
+        )
+
+    if recovered:
+        logger.warning(
+            "Citation evid_id 기반 복구 적용: %d/%d",
+            len(recovered),
+            len(citations),
+        )
+    return recovered
+
+
 def normalize_whitespace(text: str) -> str:
     """공백/줄바꿈 정규화."""
     return " ".join(text.split()).lower()
+
+
+def _normalize_soft(text: str) -> str:
+    normalized = normalize_whitespace(text)
+    return re.sub(r"[^0-9a-zA-Z가-힣]", "", normalized)
+
+
+def _soft_match_quote(normalized_quote: str, normalized_source: str) -> bool:
+    if not settings.stage67_citation_soft_match_enabled:
+        return False
+
+    quote_soft = _normalize_soft(normalized_quote)
+    source_soft = _normalize_soft(normalized_source)
+    if not quote_soft or not source_soft:
+        return False
+
+    if quote_soft in source_soft:
+        return True
+
+    threshold = float(settings.stage67_citation_soft_match_threshold)
+    if threshold <= 0:
+        return False
+
+    # 문장 단위로 유사도를 측정해 과도한 오탐을 줄인다.
+    source_sentences = [seg for seg in re.split(r"[.!?。！？\n]+", normalized_source) if seg.strip()]
+    for sentence in source_sentences:
+        candidate = _normalize_soft(sentence)
+        if not candidate:
+            continue
+        ratio = SequenceMatcher(None, quote_soft, candidate).ratio()
+        if ratio >= threshold:
+            return True
+
+    return False
 
 
 def enforce_unverified_if_no_citations(verdict: dict) -> dict:
@@ -271,7 +604,10 @@ def build_draft_verdict(
 
     # citations 검증
     raw_citations = raw.get("citations", []) or []
-    verdict["citations"] = validate_citations(raw_citations, evidence_topk)
+    validated_citations = validate_citations(raw_citations, evidence_topk)
+    if not validated_citations and raw_citations:
+        validated_citations = recover_citations_by_evid_id(raw_citations, evidence_topk)
+    verdict["citations"] = validated_citations
 
     # citations=0이면 UNVERIFIED 강제
     verdict = enforce_unverified_if_no_citations(verdict)
@@ -288,16 +624,18 @@ def parse_judge_json(text: str) -> dict[str, Any]:
     Judge 응답 JSON 파싱 (Stage 9 전용).
 
     - LLMGateway._parse_json과 동일한 추출 규칙 사용
-    - 파싱 실패 시 JSONParseError 발생
+    - 파싱 실패 시 빈 dict 반환
     """
     try:
         extracted = extract_json_from_text(text)
         parsed = json.loads(extracted)
         if not isinstance(parsed, dict):
-            raise JSONParseError("Judge JSON 루트는 object(dict)여야 합니다.")
+            logger.warning("Judge JSON 루트가 dict가 아님, 빈 dict 반환")
+            return {}
         return cast(dict[str, Any], parsed)
     except (json.JSONDecodeError, TypeError) as e:
-        raise JSONParseError(f"Judge JSON 파싱 실패: {e}")
+        logger.warning("Judge JSON 파싱 실패: %s", e)
+        return {}
 
 
 def parse_judge_json_with_retry(
@@ -307,37 +645,167 @@ def parse_judge_json_with_retry(
     retry_call_fn: Optional[Callable[[str], str]] = None,
 ) -> dict[str, Any]:
     """
-    Judge JSON 파싱 with (옵션) 재시도.
+    Judge JSON 파싱 + 선택적 재시도.
 
-    기본값 max_retries=0으로 LLMGateway.judge_verdict의 기본 동작(파싱 실패 시 즉시 실패)을 유지합니다.
+    Args:
+        call_fn: SLM 호출 함수
+        max_retries: 재시도 횟수
+        retry_system_prompt: 재시도용 시스템 프롬프트
+        retry_call_fn: 재시도 호출 함수
+
+    Returns:
+        파싱된 dict, 파싱 실패 시 빈 dict 반환
     """
-    attempt = 0
     response = call_fn()
-    try:
-        return parse_judge_json(response)
-    except JSONParseError as e:
-        last_error = e
+    parsed = parse_judge_json(response)
+    if parsed:
+        return parsed
 
-    while attempt < max_retries:
-        attempt += 1
-        logger.info("Judge JSON 파싱 실패, 재시도")
-        if retry_call_fn:
-            response = retry_call_fn(retry_system_prompt)
-        else:
-            response = call_fn()
-        try:
-            return parse_judge_json(response)
-        except JSONParseError as e:
-            last_error = e
+    if not callable(retry_call_fn):
+        return {}
 
-    raise last_error
+    retries = max(0, int(max_retries))
+    for _ in range(retries):
+        retry_response = retry_call_fn(retry_system_prompt)
+        parsed = parse_judge_json(retry_response)
+        if parsed:
+            return parsed
+
+    return {}
 
 
 def validate_judge_output(result: dict[str, Any]) -> dict[str, Any]:
     """
     Judge 출력 검증 (Stage 9 전용).
 
-    현재는 LLMGateway의 후처리 로직에 위임되며,
-    출력 내용을 변경하지 않습니다.
+    비표준 키(result/reason 등)를 표준 스키마로 정규화하고
+    필수 정보가 부족하면 보수적 기본값(FALSE, confidence=0)을 적용합니다.
     """
-    return result
+    if not isinstance(result, dict):
+        logger.warning("Judge output이 dict가 아님, 빈 dict로 처리")
+        result = {}
+
+    def _string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        cleaned: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            token = item.strip()
+            if token:
+                cleaned.append(token)
+        return cleaned
+
+    def _normalize_label(value: Any) -> str:
+        raw = str(value or "").strip().upper()
+        if raw in {"TRUE", "FALSE"}:
+            return raw
+        if raw in {"UNVERIFIED", "MIXED"}:
+            return "FALSE"
+        if raw in {"FACT", "SUPPORTED", "CONFIRMED", "REAL"}:
+            return "TRUE"
+        if raw in {"FAKE", "REFUTED", "NOT_TRUE"}:
+            return "FALSE"
+        return ""
+
+    def _to_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    schema_mismatch = False
+
+    raw_label = (
+        result.get("verdict_label")
+        or result.get("label")
+        or result.get("result")
+        or result.get("verdict")
+    )
+    label = _normalize_label(raw_label)
+    if not label:
+        schema_mismatch = True
+        label = "FALSE"
+
+    raw_confidence = result.get("confidence_percent")
+    if isinstance(raw_confidence, (int, float)):
+        confidence_percent = int(max(0, min(100, int(raw_confidence))))
+    elif isinstance(result.get("confidence"), (int, float)):
+        confidence_val = float(result.get("confidence"))
+        if confidence_val <= 1.0:
+            confidence_percent = int(max(0.0, min(1.0, confidence_val)) * 100)
+        else:
+            confidence_percent = int(max(0.0, min(100.0, confidence_val)))
+    else:
+        schema_mismatch = True
+        confidence_percent = 0
+
+    explanation = str(
+        result.get("explanation")
+        or result.get("reason")
+        or result.get("rationale")
+        or ""
+    ).strip()
+    if not explanation:
+        schema_mismatch = True
+        explanation = "모델 출력이 스키마와 달라 보수적으로 판정했습니다."
+
+    headline = str(result.get("headline") or "").strip()
+    if not headline:
+        schema_mismatch = True
+        headline = f"이 주장은 {confidence_percent}% 확률로 {'사실' if label == 'TRUE' else '거짓'}로 판단됩니다"
+
+    raw_evaluation = result.get("evaluation")
+    if isinstance(raw_evaluation, dict):
+        evaluation = {
+            "hallucination_count": _to_int(raw_evaluation.get("hallucination_count", 0), 0),
+            "grounding_score": _to_float(raw_evaluation.get("grounding_score", 1.0), 1.0),
+            "is_consistent": bool(raw_evaluation.get("is_consistent", True)),
+            "policy_violations": _string_list(raw_evaluation.get("policy_violations")),
+        }
+    else:
+        schema_mismatch = True
+        evaluation = {
+            "hallucination_count": 0,
+            "grounding_score": 1.0,
+            "is_consistent": True,
+            "policy_violations": [],
+        }
+
+    selected_ids_raw = (
+        result.get("selected_evidence_ids")
+        or result.get("selected_ids")
+        or result.get("evidence_ids")
+        or []
+    )
+    selected_evidence_ids = _string_list(selected_ids_raw)
+    if "selected_evidence_ids" not in result and selected_evidence_ids:
+        schema_mismatch = True
+
+    evidence_summary = result.get("evidence_summary") if isinstance(result.get("evidence_summary"), list) else []
+    cautions = _string_list(result.get("cautions") or result.get("warnings"))
+    recommendation = str(result.get("recommendation") or "").strip()
+    risk_flags = _string_list(result.get("risk_flags"))
+
+    if schema_mismatch and "JUDGE_SCHEMA_MISMATCH" not in risk_flags:
+        risk_flags.append("JUDGE_SCHEMA_MISMATCH")
+
+    return {
+        "evaluation": evaluation,
+        "verdict_label": label,
+        "confidence_percent": confidence_percent,
+        "headline": headline,
+        "explanation": explanation,
+        "selected_evidence_ids": selected_evidence_ids,
+        "evidence_summary": evidence_summary,
+        "cautions": cautions,
+        "recommendation": recommendation,
+        "risk_flags": risk_flags,
+    }

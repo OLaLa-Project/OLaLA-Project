@@ -18,8 +18,8 @@ class Settings(BaseSettings):
 
     ollama_url: str = "http://ollama:11434"
     ollama_timeout: float = 60.0
-    embed_model: str = "nomic-embed-text"
-    embed_dim: int = 768
+    embed_model: str = "dragonkue/multilingual-e5-small-ko-v2"
+    embed_dim: int = 384
 
     naver_client_id: str = ""
     naver_client_secret: str = ""
@@ -35,6 +35,53 @@ class Settings(BaseSettings):
     external_api_backoff_seconds: float = 0.4
     naver_max_concurrency: int = 3
     ddg_max_concurrency: int = 3
+    stage3_ddg_max_results: int = 100
+    stage3_global_candidate_cap: int = 120
+    stage3_source_cap_news: int = 60
+    stage3_source_cap_wiki: int = 35
+    stage3_source_cap_web: int = 25
+    stage2_enable_stance_split: bool = True
+    stage3_html_signal_enabled: bool = True
+    stage3_html_signal_top_n: int = 20
+    stage3_html_signal_timeout_seconds: float = 3.0
+    stage3_source_tier_overrides_json: str = ""
+    stage5_threshold_standard: float = 0.70
+    stage5_threshold_rumor: float = 0.78
+    stage5_topk_standard: int = 8
+    stage5_topk_rumor: int = 6
+    stage5_topk_support: int = 3
+    stage5_topk_skeptic: int = 3
+    stage5_domain_cap: int = 2
+    stage4_credibility_adjust_weight_news_web: float = 0.20
+    stage4_credibility_adjust_weight_wiki: float = 0.08
+    stage5_soft_split_enabled: bool = True
+    stage5_shared_trust_min: float = 0.68
+    stage6_rumor_required_intents_csv: str = "official_statement,fact_check"
+    stage67_prompt_evidence_limit: int = 4
+    stage67_prompt_snippet_max_chars: int = 180
+    stage67_response_max_tokens: int = 896
+    stage67_json_retry_enabled: bool = True
+    stage67_json_retry_max_tokens: int = 320
+    stage67_citation_soft_match_enabled: bool = True
+    stage67_citation_soft_match_threshold: float = 0.93
+    stage9_rumor_confidence_cap: int = 55
+    stage9_wiki_retrieval_top_k_fact: int = 5
+    stage9_wiki_retrieval_top_k_rumor: int = 0
+    stage9_wiki_retrieval_enabled_rumor: bool = False
+    stage9_schema_fallback_select_k: int = 2
+    stage9_fail_closed_only_when_no_evidence: bool = True
+    stage9_min_evidence_trust: float = 0.58
+    stage9_unverified_confidence_cap: int = 35
+    stage9_no_evidence_confidence_cap: int = 20
+    stage9_no_evidence_grounding_cap: float = 0.20
+    stage9_fail_closed_confidence_cap: int = 30
+    stage9_fail_closed_grounding_cap: float = 0.30
+    stage9_self_contradiction_grounding_cap: float = 0.40
+    stage9_prompt_evidence_limit: int = 6
+    stage9_prompt_snippet_max_chars: int = 160
+    stage9_prompt_pack_citation_limit: int = 2
+    stage9_prompt_pack_text_max_chars: int = 160
+    stage9_prompt_retrieval_limit: int = 2
 
     slm_base_url: str = "http://localhost:8080/v1"
     slm_api_key: str = "local-slm-key"
@@ -42,6 +89,10 @@ class Settings(BaseSettings):
     slm_timeout_seconds: int = 60
     slm_max_tokens: int = 1024
     slm_temperature: float = 0.1
+    slm_stream_enabled: bool = True
+    slm_stream_connect_timeout_seconds: float = 10.0
+    slm_stream_read_timeout_seconds: float = 120.0
+    slm_stream_hard_timeout_seconds: int = 300
 
     slm1_base_url: str = "http://localhost:8080/v1"
     slm1_api_key: str = "local-slm-key"

@@ -44,10 +44,9 @@ def _normalize_wiki_query(text: str) -> list[str]:
     for part in parts:
         if not part or not part.strip():
             continue
-        for token in part.strip().split():
-            token = token.strip()
-            if token:
-                terms.append(token)
+        token = part.strip()
+        if token:
+            terms.append(token)
     return terms if terms else [text.strip()]
 
 
@@ -75,19 +74,23 @@ def _normalize_bundle_terms(items: Any) -> list[str]:
 def _build_queries(state: GraphState) -> GraphState:
     variants = state.get("query_variants") or []
     search_queries: list[SearchQuery] = []
-    seen: set[tuple[str, str, str]] = set()
-    used_bundle_terms = False
+    seen: set[tuple[str, str, str, str]] = set()
+    default_mode = str(state.get("claim_mode", "fact") or "fact").strip().lower() or "fact"
 
     keyword_bundles = state.get("keyword_bundles") or {}
     bundle_terms = _normalize_bundle_terms(keyword_bundles.get("primary"))[:2]
+    constraints = state.get("search_constraints")
+    constraints_meta = constraints if isinstance(constraints, dict) and constraints else {}
 
     for variant in variants:
         if isinstance(variant, dict):
             text = str(variant.get("text", "")).strip()
             qtype: Any = variant.get("type", "direct")
+            base_meta = variant.get("meta") if isinstance(variant.get("meta"), dict) else {}
         elif isinstance(variant, str):
             text = variant.strip()
             qtype = "direct"
+            base_meta = {}
         else:
             continue
 
@@ -106,43 +109,68 @@ def _build_queries(state: GraphState) -> GraphState:
 
         if final_type == "wiki":
             wiki_mode = _resolve_wiki_search_mode(state)
-            if bundle_terms and not used_bundle_terms:
-                for term in bundle_terms:
-                    key = (final_type, term, wiki_mode)
-                    if not term or key in seen:
-                        continue
-                    seen.add(key)
-                    search_queries.append(
-                        {
-                            "type": "wiki",
-                            "text": term,
-                            "search_mode": cast(Any, wiki_mode),
-                            "meta": {"original": text, "source": "keyword_bundles"},
-                        }
-                    )
-                used_bundle_terms = True
-                continue
-
             normalized_terms = _normalize_wiki_query(text)[:2]
+            claim_id = str(base_meta.get("claim_id", "")).strip() if isinstance(base_meta, dict) else ""
             for term in normalized_terms:
-                key = (final_type, term, wiki_mode)
+                key = (final_type, term, wiki_mode, claim_id)
                 if not term or key in seen:
                     continue
                 seen.add(key)
+                meta: dict[str, Any] = {}
+                if isinstance(base_meta, dict) and base_meta:
+                    meta.update(base_meta)
+                meta.setdefault("original", text)
+                meta.setdefault("mode", default_mode)
+                if constraints_meta:
+                    meta.setdefault("search_constraints", constraints_meta)
                 search_queries.append(
                     {
                         "type": "wiki",
                         "text": term,
                         "search_mode": cast(Any, wiki_mode),
-                        "meta": {"original": text},
+                        "meta": meta,
                     }
                 )
         else:
-            key = (final_type, text, "")
+            claim_id = str(base_meta.get("claim_id", "")).strip() if isinstance(base_meta, dict) else ""
+            key = (final_type, text, "", claim_id)
             if key in seen:
                 continue
             seen.add(key)
-            search_queries.append({"type": cast(Any, final_type), "text": text})
+            query: SearchQuery = {"type": cast(Any, final_type), "text": text}
+            meta: dict[str, Any] = {}
+            if isinstance(base_meta, dict) and base_meta:
+                meta.update(base_meta)
+            meta.setdefault("mode", default_mode)
+            if constraints_meta:
+                meta.setdefault("search_constraints", constraints_meta)
+            if meta:
+                query["meta"] = meta
+            search_queries.append(query)
+
+    if bundle_terms:
+        wiki_mode = _resolve_wiki_search_mode(state)
+        for term in bundle_terms:
+            key = ("wiki", term, wiki_mode, "bundle")
+            if not term or key in seen:
+                continue
+            seen.add(key)
+            meta: dict[str, Any] = {
+                "original": term,
+                "source": "keyword_bundles",
+                "intent": "entity_profile",
+                "mode": default_mode,
+            }
+            if constraints_meta:
+                meta["search_constraints"] = constraints_meta
+            search_queries.append(
+                {
+                    "type": "wiki",
+                    "text": term,
+                    "search_mode": cast(Any, wiki_mode),
+                    "meta": meta,
+                }
+            )
 
     claim_text = state.get("claim_text")
     if not search_queries and isinstance(claim_text, str) and claim_text.strip():
@@ -151,15 +179,24 @@ def _build_queries(state: GraphState) -> GraphState:
     return {"search_queries": search_queries}
 
 
+def _extract_stage_payload(stage_name: str, output: dict[str, Any]) -> dict[str, Any]:
+    keys = STAGE_OUTPUT_KEYS.get(cast(StageName, stage_name), [])
+    if not keys:
+        return {}
+    return {key: output.get(key) for key in keys if key in output}
+
+
 def _with_log(stage_name: str, fn: StageFn) -> StageFn:
     def wrapper(state: GraphState) -> GraphState:
         raw_state = cast(dict[str, Any], state)
         log_stage_event(raw_state, stage_name, "start")
         start = time.time()
         out = fn(state)
+        raw_out = cast(dict[str, Any], out)
+        stage_payload = _extract_stage_payload(stage_name, raw_out)
         return cast(
             GraphState,
-            attach_stage_log(raw_state, stage_name, cast(dict[str, Any], out), started_at=start),
+            attach_stage_log(raw_state, stage_name, raw_out, stage_output=stage_payload, started_at=start),
         )
 
     return wrapper
@@ -184,8 +221,13 @@ def _async_node_wrapper(stage_name: RegistryStageName) -> AsyncStageFn:
             logger.info("[%s] %s start", state.get("trace_id", "unknown"), stage_name)
             start = time.time()
             out = await async_fn(state)
+            raw_out = cast(dict[str, Any], out)
+            stage_payload = _extract_stage_payload(stage_name, raw_out)
             logger.info("[%s] %s end", state.get("trace_id", "unknown"), stage_name)
-            return cast(GraphState, attach_stage_log(raw_state, stage_name, cast(dict[str, Any], out), started_at=start))
+            return cast(
+                GraphState,
+                attach_stage_log(raw_state, stage_name, raw_out, stage_output=stage_payload, started_at=start),
+            )
 
         fn = _with_log(stage_name, _run_stage(stage_name))
         return await asyncio.to_thread(fn, state)
@@ -264,6 +306,11 @@ STAGE_SEQUENCE: list[tuple[StageName, StageFn]] = [
 STAGE_OUTPUT_KEYS: dict[StageName, list[str]] = {
     "stage01_normalize": [
         "claim_text",
+        "original_intent",
+        "claim_mode",
+        "risk_markers",
+        "verification_priority",
+        "normalize_claims",
         "canonical_evidence",
         "entity_map",
         "prompt_normalize_user",
@@ -271,6 +318,7 @@ STAGE_OUTPUT_KEYS: dict[StageName, list[str]] = {
         "slm_raw_normalize",
     ],
     "stage02_querygen": [
+        "query_core_fact",
         "query_variants",
         "keyword_bundles",
         "search_constraints",
@@ -283,17 +331,37 @@ STAGE_OUTPUT_KEYS: dict[StageName, list[str]] = {
     "adapter_queries": ["search_queries"],
     "stage03_wiki": ["wiki_candidates"],
     "stage03_web": ["web_candidates"],
-    "stage03_merge": ["evidence_candidates"],
-    "stage04_score": ["scored_evidence"],
-    "stage05_topk": ["citations", "evidence_topk", "risk_flags"],
-    "stage06_verify_support": ["verdict_support", "prompt_support_user", "prompt_support_system", "slm_raw_support"],
-    "stage07_verify_skeptic": ["verdict_skeptic", "prompt_skeptic_user", "prompt_skeptic_system", "slm_raw_skeptic"],
+    "stage03_merge": ["evidence_candidates", "stage03_merge_stats"],
+    "stage04_score": ["scored_evidence", "score_diagnostics"],
+    "stage05_topk": [
+        "citations",
+        "evidence_topk",
+        "evidence_topk_support",
+        "evidence_topk_skeptic",
+        "risk_flags",
+        "topk_diagnostics",
+    ],
+    "stage06_verify_support": [
+        "verdict_support",
+        "stage06_diagnostics",
+        "prompt_support_user",
+        "prompt_support_system",
+        "slm_raw_support",
+    ],
+    "stage07_verify_skeptic": [
+        "verdict_skeptic",
+        "stage07_diagnostics",
+        "prompt_skeptic_user",
+        "prompt_skeptic_system",
+        "slm_raw_skeptic",
+    ],
     "stage08_aggregate": ["support_pack", "skeptic_pack", "evidence_index", "judge_prep_meta"],
     "stage09_judge": [
         "final_verdict",
         "user_result",
         "risk_flags",
         "judge_retrieval",
+        "stage09_diagnostics",
         "prompt_judge_user",
         "prompt_judge_system",
         "slm_raw_judge",

@@ -107,31 +107,44 @@ class GraphState(TypedDict, total=False):
     include_full_outputs: bool
 
     claim_text: str
+    original_intent: Literal["verification", "exploration"]
+    claim_mode: Literal["fact", "rumor", "mixed"]
+    verification_priority: Literal["high", "normal"]
+    risk_markers: list[str]
     canonical_evidence: dict[str, Any]
     entity_map: dict[str, Any]
 
     query_variants: list[dict[str, Any]]
     keyword_bundles: dict[str, Any]
     search_constraints: dict[str, Any]
+    query_core_fact: str
     querygen_prompt_used: str
     querygen_claims: list[dict[str, Any]]
     search_queries: list[SearchQuery]
 
     wiki_candidates: list[dict[str, Any]]
     web_candidates: list[dict[str, Any]]
+    stage03_merge_stats: dict[str, Any]
     evidence_candidates: list[dict[str, Any]]
     scored_evidence: list[dict[str, Any]]
+    score_diagnostics: dict[str, Any]
     citations: list[dict[str, Any]]
     evidence_topk: list[dict[str, Any]]
+    evidence_topk_support: list[dict[str, Any]]
+    evidence_topk_skeptic: list[dict[str, Any]]
     risk_flags: list[str]
+    topk_diagnostics: dict[str, Any]
     verdict_support: dict[str, Any]
+    stage06_diagnostics: dict[str, Any]
     verdict_skeptic: dict[str, Any]
+    stage07_diagnostics: dict[str, Any]
     # Stage9 판결을 위해 Stage8에서 정제한 입력 패키지
     support_pack: dict[str, Any]
     skeptic_pack: dict[str, Any]
     evidence_index: dict[str, Any]
     judge_prep_meta: dict[str, Any]
     judge_retrieval: list[dict[str, Any]]
+    stage09_diagnostics: dict[str, Any]
     final_verdict: dict[str, Any]
     user_result: dict[str, Any]
     prompt_normalize_user: str
@@ -153,4 +166,4 @@ class GraphState(TypedDict, total=False):
 
     stage_logs: Annotated[list[dict[str, Any]], operator.add]
     stage_outputs: Annotated[dict[str, Any], operator.or_]
-    stage_full_outputs: dict[str, Any]
+    stage_full_outputs: Annotated[dict[str, Any], operator.or_]

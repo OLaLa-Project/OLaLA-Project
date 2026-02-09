@@ -237,10 +237,31 @@ async def run_pipeline_stream(req: TruthCheckRequest) -> AsyncGenerator[str, Non
                 current_stage = node_name
                 stream_logger.info(f"Stream yielded node: {node_name}")
                 
+                # DEFENSIVE: Check node_state type
+                if not isinstance(node_state, dict):
+                    stream_logger.error(
+                        f"[{trace_id}] Node {node_name} returned unexpected type: {type(node_state).__name__}"
+                    )
+                    stream_logger.error(f"[{trace_id}] Content preview: {str(node_state)[:500]}")
+                    # Attempt recovery
+                    if isinstance(node_state, list):
+                        stream_logger.warning(f"[{trace_id}] Converting list to empty dict for recovery")
+                        node_state = {}
+                    else:
+                        raise TypeError(f"Node {node_name} returned {type(node_state)}, expected dict")
+                
                 final_state.update(node_state)
                 
                 # 정해진 출력 키에 따라 클라이언트에 보낼 데이터 필터링
-                stage_data = node_state.get("stage_outputs", {}).get(node_name, {})
+                stage_outputs = node_state.get("stage_outputs", {})
+                if not isinstance(stage_outputs, dict):
+                    stream_logger.error(
+                        f"[{trace_id}] stage_outputs is {type(stage_outputs).__name__}, expected dict. "
+                        f"Content: {str(stage_outputs)[:300]}"
+                    )
+                    stage_outputs = {}
+                
+                stage_data = stage_outputs.get(node_name, {})
                 if not stage_data and node_name in STAGE_OUTPUT_KEYS:
                      keys = STAGE_OUTPUT_KEYS[node_name]
                      stage_data = {k: node_state.get(k) for k in keys if k in node_state}
@@ -277,7 +298,7 @@ async def run_pipeline_stream(req: TruthCheckRequest) -> AsyncGenerator[str, Non
                 }, default=pydantic_encoder) + "\n"
 
     except Exception as e:
-        stream_logger.error(f"[{trace_id}] Stream failed at {current_stage}: {e}")
+        stream_logger.exception(f"[{trace_id}] Stream failed at {current_stage}: {e}")
         record_stage_result(
             current_stage,
             trace_id=trace_id,

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import '../../../shared/network/api_client.dart';
 import '../../../shared/network/ndjson_stream_client.dart';
 import '../presentation/stream_event_adapter.dart';
+import 'verify_endpoints.dart';
 
 class ApiVerifyRepository {
   final ApiClient _client;
@@ -16,7 +17,7 @@ class ApiVerifyRepository {
   }) async {
     try {
       final response = await _client.post(
-        '/api/truth/check',
+        VerifyEndpoints.truthCheck,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'input_payload': input,
@@ -47,7 +48,7 @@ class ApiVerifyRepository {
       });
       final response = await postNdjsonStream(
         client: _client.client,
-        url: Uri.parse('${ApiClient.baseUrl}/api/truth/check/stream-v2'),
+        url: Uri.parse('${ApiClient.baseUrl}${VerifyEndpoints.truthCheckStreamV2}'),
         headers: {'Content-Type': 'application/json'},
         body: requestBody,
       );

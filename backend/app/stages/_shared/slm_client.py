@@ -1,4 +1,4 @@
-﻿"""
+"""
 SLM Client for OpenAI-compatible API (Ollama, vLLM 등).
 
 환경변수:
@@ -14,6 +14,8 @@ SLM Client for OpenAI-compatible API (Ollama, vLLM 등).
 """
 
 import logging
+import json
+import time
 from typing import Optional
 from dataclasses import dataclass
 
@@ -32,6 +34,10 @@ class SLMConfig:
     timeout: int
     max_tokens: int
     temperature: float
+    stream_enabled: bool
+    stream_connect_timeout_seconds: float
+    stream_read_timeout_seconds: float
+    stream_hard_timeout_seconds: int
 
     @classmethod
     def from_settings(cls, prefix: str = "SLM") -> "SLMConfig":
@@ -45,6 +51,10 @@ class SLMConfig:
                 timeout=settings.slm1_timeout_seconds,
                 max_tokens=settings.slm1_max_tokens,
                 temperature=settings.slm1_temperature,
+                stream_enabled=settings.slm_stream_enabled,
+                stream_connect_timeout_seconds=settings.slm_stream_connect_timeout_seconds,
+                stream_read_timeout_seconds=settings.slm_stream_read_timeout_seconds,
+                stream_hard_timeout_seconds=settings.slm_stream_hard_timeout_seconds,
             )
         if key == "SLM2":
             return cls(
@@ -54,6 +64,10 @@ class SLMConfig:
                 timeout=settings.slm2_timeout_seconds,
                 max_tokens=settings.slm2_max_tokens,
                 temperature=settings.slm2_temperature,
+                stream_enabled=settings.slm_stream_enabled,
+                stream_connect_timeout_seconds=settings.slm_stream_connect_timeout_seconds,
+                stream_read_timeout_seconds=settings.slm_stream_read_timeout_seconds,
+                stream_hard_timeout_seconds=settings.slm_stream_hard_timeout_seconds,
             )
         return cls(
             base_url=settings.slm_base_url,
@@ -62,6 +76,10 @@ class SLMConfig:
             timeout=settings.slm_timeout_seconds,
             max_tokens=settings.slm_max_tokens,
             temperature=settings.slm_temperature,
+            stream_enabled=settings.slm_stream_enabled,
+            stream_connect_timeout_seconds=settings.slm_stream_connect_timeout_seconds,
+            stream_read_timeout_seconds=settings.slm_stream_read_timeout_seconds,
+            stream_hard_timeout_seconds=settings.slm_stream_hard_timeout_seconds,
         )
 
     @classmethod
@@ -75,6 +93,122 @@ class SLMClient:
 
     def __init__(self, config: Optional[SLMConfig] = None):
         self.config = config or SLMConfig.from_settings()
+
+    def _stream_timeout(self) -> tuple[float, float]:
+        connect_timeout = max(0.1, float(self.config.stream_connect_timeout_seconds))
+        read_timeout = max(0.1, float(self.config.stream_read_timeout_seconds))
+        return connect_timeout, read_timeout
+
+    def _stream_deadline(self) -> Optional[float]:
+        hard_timeout = int(self.config.stream_hard_timeout_seconds or 0)
+        if hard_timeout <= 0:
+            return None
+        return time.monotonic() + hard_timeout
+
+    def _check_deadline(self, deadline: Optional[float]) -> None:
+        if deadline is None:
+            return
+        if time.monotonic() > deadline:
+            raise requests.exceptions.Timeout(
+                f"SLM 스트리밍 hard timeout ({self.config.stream_hard_timeout_seconds}초)"
+            )
+
+    @staticmethod
+    def _extract_non_stream_content(data: dict) -> str:
+        if "choices" in data:
+            choices = data.get("choices") or []
+            if choices:
+                choice0 = choices[0] or {}
+                message = choice0.get("message") if isinstance(choice0, dict) else None
+                if isinstance(message, dict):
+                    return str(message.get("content", "") or "")
+                return str(choice0.get("text", "") or "")
+        return str(data.get("response", "") or "")
+
+    def _consume_openai_stream(
+        self,
+        response: requests.Response,
+        deadline: Optional[float],
+    ) -> str:
+        chunks: list[str] = []
+        response.encoding = response.encoding or "utf-8"
+        for raw_line in response.iter_lines(decode_unicode=False):
+            self._check_deadline(deadline)
+            if not raw_line:
+                continue
+            if isinstance(raw_line, bytes):
+                line = raw_line.decode("utf-8", errors="replace").strip()
+            else:
+                line = str(raw_line).strip()
+            if not line:
+                continue
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if not line:
+                continue
+            if line == "[DONE]":
+                break
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            choices = data.get("choices") or []
+            if not choices:
+                continue
+            choice0 = choices[0] or {}
+            text_piece = ""
+            if isinstance(choice0, dict):
+                delta = choice0.get("delta")
+                if isinstance(delta, dict):
+                    text_piece = str(delta.get("content", "") or "")
+                if not text_piece:
+                    message = choice0.get("message")
+                    if isinstance(message, dict):
+                        text_piece = str(message.get("content", "") or "")
+            if text_piece:
+                chunks.append(text_piece)
+
+            finish_reason = choice0.get("finish_reason") if isinstance(choice0, dict) else None
+            if finish_reason:
+                break
+        return "".join(chunks).strip()
+
+    def _consume_ollama_stream(
+        self,
+        response: requests.Response,
+        deadline: Optional[float],
+    ) -> str:
+        chunks: list[str] = []
+        response.encoding = response.encoding or "utf-8"
+        for raw_line in response.iter_lines(decode_unicode=False):
+            self._check_deadline(deadline)
+            if not raw_line:
+                continue
+            if isinstance(raw_line, bytes):
+                line = raw_line.decode("utf-8", errors="replace").strip()
+            else:
+                line = str(raw_line).strip()
+            if not line:
+                continue
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            text_piece = str(data.get("response", "") or "")
+            if not text_piece:
+                message = data.get("message")
+                if isinstance(message, dict):
+                    text_piece = str(message.get("content", "") or "")
+            if text_piece:
+                chunks.append(text_piece)
+            if data.get("done") is True:
+                break
+        return "".join(chunks).strip()
 
     def chat_completion(
         self,
@@ -114,55 +248,127 @@ class SLMClient:
             "temperature": temperature if temperature is not None else self.config.temperature,
         }
 
-        logger.debug(f"SLM 호출: model={self.config.model}, max_tokens={payload['max_tokens']}")
+        logger.debug(
+            f"SLM 호출: model={self.config.model}, max_tokens={payload['max_tokens']}, "
+            f"stream_enabled={self.config.stream_enabled}"
+        )
 
-        def _post_json(post_url: str, post_payload: dict) -> requests.Response:
+        def _post_json(
+            post_url: str,
+            post_payload: dict,
+            *,
+            timeout: float | tuple[float, float] | None = None,
+            stream: bool = False,
+        ) -> requests.Response:
             return requests.post(
                 post_url,
                 headers=headers,
                 json=post_payload,
-                timeout=self.config.timeout,
+                timeout=self.config.timeout if timeout is None else timeout,
+                stream=stream,
             )
 
-        try:
-            response = _post_json(url, payload)
-            if response.status_code == 404:
-                # Ollama 기본 엔드포인트 fallback
-                # base URL에 /v1이 있으면 제거, 없으면 그대로 사용하여 /api/generate로 전환
-                if "/v1" in base:
-                    ollama_url = base.replace("/v1", "/api/generate")
-                else:
-                    ollama_url = f"{base}/api/generate"
-                    
-                logger.warning(f"SLM 404 Fallback: {url} -> {ollama_url}")
-                ollama_payload = {
-                    "model": self.config.model,
-                    "prompt": user_prompt,
-                    "system": system_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature if temperature is not None else self.config.temperature,
-                        "num_predict": max_tokens or self.config.max_tokens,
-                    },
-                }
-                response = _post_json(ollama_url, ollama_payload)
-            response.raise_for_status()
-            try:
+        def _resolve_ollama_url() -> str:
+            # base URL에 /v1이 있으면 제거, 없으면 그대로 사용하여 /api/generate로 전환
+            if "/v1" in base:
+                return base.replace("/v1", "/api/generate")
+            return f"{base}/api/generate"
+
+        def _call_ollama(use_stream: bool) -> str:
+            ollama_url = _resolve_ollama_url()
+            logger.warning(f"SLM 404 Fallback: {url} -> {ollama_url}")
+            ollama_payload = {
+                "model": self.config.model,
+                "prompt": user_prompt,
+                "system": system_prompt,
+                "stream": False,
+                "options": {
+                    "temperature": temperature if temperature is not None else self.config.temperature,
+                    "num_predict": max_tokens or self.config.max_tokens,
+                },
+            }
+
+            if use_stream:
+                stream_payload = dict(ollama_payload)
+                stream_payload["stream"] = True
+                try:
+                    with _post_json(
+                        ollama_url,
+                        stream_payload,
+                        timeout=self._stream_timeout(),
+                        stream=True,
+                    ) as response:
+                        response.raise_for_status()
+                        streamed = self._consume_ollama_stream(response, self._stream_deadline())
+                    if streamed:
+                        logger.debug(f"SLM(ollama-stream) 응답 길이: {len(streamed)} chars")
+                        return streamed
+                    logger.warning("SLM(ollama-stream) 응답이 비어 non-stream으로 재시도합니다.")
+                except requests.exceptions.Timeout as e:
+                    logger.warning(f"SLM(ollama-stream) 타임아웃, non-stream fallback: {e}")
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"SLM(ollama-stream) 호출 실패, non-stream fallback: {e}")
+
+            with _post_json(ollama_url, ollama_payload) as response:
+                response.raise_for_status()
                 data = response.json()
-            except Exception as e:
-                logger.error(f"SLM API 응답 파싱 실패: {e}")
-                logger.error(f"응답 본문: {response.text}")
-                raise
-            if "choices" in data:
-                content = data["choices"][0]["message"]["content"]
-            else:
-                content = data.get("response", "")
+            content = str(data.get("response", "") or "")
+            logger.debug(f"SLM(ollama) 응답 길이: {len(content)} chars")
+            return content.strip()
+
+        try:
+            if self.config.stream_enabled:
+                stream_payload = dict(payload)
+                stream_payload["stream"] = True
+                try:
+                    with _post_json(
+                        url,
+                        stream_payload,
+                        timeout=self._stream_timeout(),
+                        stream=True,
+                    ) as response:
+                        if response.status_code == 404:
+                            return _call_ollama(use_stream=True)
+                        response.raise_for_status()
+                        streamed = self._consume_openai_stream(response, self._stream_deadline())
+                    if streamed:
+                        logger.debug(f"SLM(stream) 응답 길이: {len(streamed)} chars")
+                        return streamed
+                    logger.warning("SLM(stream) 응답이 비어 non-stream으로 재시도합니다.")
+                except requests.exceptions.Timeout as e:
+                    logger.warning(f"SLM(stream) 타임아웃, non-stream fallback: {e}")
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"SLM(stream) 호출 실패, non-stream fallback: {e}")
+                except (KeyError, IndexError, ValueError) as e:
+                    logger.warning(f"SLM(stream) 파싱 실패, non-stream fallback: {e}")
+
+            with _post_json(url, payload) as response:
+                if response.status_code == 404:
+                    return _call_ollama(use_stream=self.config.stream_enabled)
+                response.raise_for_status()
+                try:
+                    data = response.json()
+                except Exception as e:
+                    logger.error(f"SLM API 응답 파싱 실패: {e}")
+                    logger.error(f"응답 본문: {response.text}")
+                    raise
+            content = self._extract_non_stream_content(data)
             logger.debug(f"SLM 응답 길이: {len(content)} chars")
-            return (content or "").strip()
+            return content.strip()
 
         except requests.exceptions.Timeout:
-            logger.error(f"SLM 타임아웃: {self.config.timeout}초 초과")
-            raise SLMError(f"SLM 호출 타임아웃 ({self.config.timeout}초)")
+            logger.error(
+                "SLM 타임아웃: request_timeout=%ss, stream_read_timeout=%ss, stream_hard_timeout=%ss",
+                self.config.timeout,
+                self.config.stream_read_timeout_seconds,
+                self.config.stream_hard_timeout_seconds,
+            )
+            raise SLMError(
+                "SLM 호출 타임아웃 "
+                f"(request={self.config.timeout}s, "
+                f"stream_read={self.config.stream_read_timeout_seconds}s, "
+                f"stream_hard={self.config.stream_hard_timeout_seconds}s)"
+            )
 
         except requests.exceptions.RequestException as e:
             logger.error(f"SLM 호출 실패: {e}")

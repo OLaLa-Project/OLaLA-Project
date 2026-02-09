@@ -37,9 +37,10 @@ class ResultLoadingView extends GetView<ResultController> {
 
                         // ✅ 헤드라인
                         Obx(() {
-                          final text = controller.loadingHeadline.value.isNotEmpty
-                              ? controller.loadingHeadline.value
-                              : 'OLaLA로 검증하고 있어요';
+                          final text =
+                              controller.loadingHeadline.value.isNotEmpty
+                                  ? controller.loadingHeadline.value
+                                  : 'OLaLA로 검증하고 있어요';
                           return Text(
                             text,
                             textAlign: TextAlign.center,
@@ -54,9 +55,10 @@ class ResultLoadingView extends GetView<ResultController> {
 
                         // ✅ 서브텍스트
                         Obx(() {
-                          final text = controller.loadingSubtext.value.isNotEmpty
-                              ? controller.loadingSubtext.value
-                              : 'URL 또는 문장을 분석해\n근거와 함께 결과를 만들고 있어요.';
+                          final text =
+                              controller.loadingSubtext.value.isNotEmpty
+                                  ? controller.loadingSubtext.value
+                                  : 'URL 또는 문장을 분석해\n근거와 함께 결과를 만들고 있어요.';
                           return Text(
                             text,
                             textAlign: TextAlign.center,
@@ -72,23 +74,32 @@ class ResultLoadingView extends GetView<ResultController> {
                         // ✅ 단계 패널 (1/2/3)
                         Obx(() {
                           final step = controller.loadingStep.value; // 0~2
+                          final step1 = controller.step1Detail.value.isNotEmpty
+                              ? controller.step1Detail.value
+                              : 'URL이나 문장에서 핵심을 가져옵니다.';
+                          final step2 = controller.step2Detail.value.isNotEmpty
+                              ? controller.step2Detail.value
+                              : '관련 기사와 출처를 찾습니다.';
+                          final step3 = controller.step3Detail.value.isNotEmpty
+                              ? controller.step3Detail.value
+                              : '판단과 함께 근거를 보여줍니다.';
                           return ProgressPanel(
                             currentStep: step,
-                            steps: const [
+                            steps: [
                               ProgressStep(
                                 indexLabel: '1',
                                 title: '주장/콘텐츠 추출',
-                                description: 'URL이나 문장에서 핵심을 가져옵니다.',
+                                description: step1,
                               ),
                               ProgressStep(
                                 indexLabel: '2',
                                 title: '관련 근거 수집',
-                                description: '관련 기사와 출처를 찾습니다.',
+                                description: step2,
                               ),
                               ProgressStep(
                                 indexLabel: '3',
                                 title: '근거 기반 판단 제공',
-                                description: '판단과 함께 근거를 보여줍니다.',
+                                description: step3,
                               ),
                             ],
                           );
