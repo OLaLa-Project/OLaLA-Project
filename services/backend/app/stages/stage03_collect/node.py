@@ -101,7 +101,6 @@ async def _search_naver(
     safe_query = (query or "").strip()
     if len(safe_query) > 100:
         safe_query = safe_query[:100]
-    print(f"[DEBUG Naver] query='{safe_query}'")
     logger.info("Naver query=%s", safe_query)
 
     url = "https://openapi.naver.com/v1/search/news.json"
@@ -124,13 +123,11 @@ async def _search_naver(
                     params=params,
                     timeout=request_timeout,
                 )
-            print(f"[DEBUG Naver] status={resp.status_code}")
             logger.info("Naver status=%s attempt=%d", resp.status_code, attempt + 1)
 
             if resp.status_code == 200:
                 data = resp.json()
                 items = data.get("items", [])
-                print(f"[DEBUG Naver] items={len(items)}")
                 if not items:
                     logger.warning("Naver returned 0 items for query='%s'", safe_query)
                 for item in items:
@@ -192,7 +189,6 @@ async def _search_duckduckgo(
     """Execute DuckDuckGo Search."""
     results = []
     safe_query = (query or "").strip()
-    print(f"[DEBUG DDG] query='{safe_query}'")
     logger.info("DDG query=%s", safe_query)
 
     max_attempts = _api_retry_attempts()
@@ -211,7 +207,6 @@ async def _search_duckduckgo(
                     timeout=request_timeout,
                 )
 
-            print(f"[DEBUG DDG] results={len(ddg_results)}")
             logger.info("DDG results=%d attempt=%d", len(ddg_results), attempt + 1)
 
             for r in ddg_results:
@@ -274,16 +269,13 @@ def _extract_queries(state: dict) -> list:
             if fallback:
                 search_queries = [{"type": "direct", "text": fallback}]
     
-    print(f"[DEBUG Extract Queries] Found {len(search_queries)} queries")
     logger.info(f"[Extract Queries] Found {len(search_queries)} queries")
     for i, q in enumerate(search_queries):
         if isinstance(q, dict):
             msg = f"[Extract Queries] Query {i}: type={q.get('type')}, text='{q.get('text', '')[:50]}'"
-            print(f"[DEBUG {msg}]")
             logger.info(msg)
         else:
             msg = f"[Extract Queries] Query {i}: (string) '{str(q)[:50]}'"
-            print(f"[DEBUG {msg}]")
             logger.info(msg)
     
     # NOTE: keyword_bundles auto-addition removed
@@ -342,7 +334,6 @@ async def run_wiki_async(state: dict) -> dict:
     tasks = []
     wiki_inputs: Dict[str, str] = {}
     
-    print(f"[DEBUG Wiki Search] Total queries: {len(search_queries)}")
     logger.info(f"[Wiki Search] Total queries: {len(search_queries)}")
     
     for q in search_queries:
@@ -353,7 +344,6 @@ async def run_wiki_async(state: dict) -> dict:
         qtype = str(qtype).lower().strip()
         q_search_mode = search_mode if isinstance(q, str) else q.get("search_mode", search_mode)
         
-        print(f"[DEBUG Wiki Search] Processing query: type={qtype}, text='{text}'")
         logger.info(f"[Wiki Search] Processing query: type={qtype}, text='{text}'")
         
         if not text:
@@ -362,14 +352,12 @@ async def run_wiki_async(state: dict) -> dict:
         # Only process queries explicitly marked as "wiki" type
         if qtype == "wiki":
             normalized = _normalize_wiki_query(text)
-            print(f"[DEBUG Wiki Search] Normalized '{text}' → {normalized}")
             logger.info(f"[Wiki Search] Normalized '{text}' → {normalized}")
             for term in normalized:
                 if term and term not in wiki_inputs:
                     wiki_inputs[term] = q_search_mode
 
     wiki_input_list = list(wiki_inputs.keys())
-    print(f"[DEBUG Wiki Search] Final wiki_inputs: {wiki_input_list}")
     logger.info(f"[Wiki Search] Final wiki_inputs: {wiki_input_list}")
 
     if wiki_inputs:
@@ -379,7 +367,7 @@ async def run_wiki_async(state: dict) -> dict:
         for term, mode in wiki_inputs.items():
              tasks.append(_safe_execute(_search_wiki(term, mode), 600.0, f"Wiki-Query:{term[:10]}"))
     else:
-        print("[DEBUG Wiki Search] No wiki inputs - skipping search")
+        logger.info("[Wiki Search] No wiki inputs - skipping search")
 
     results = await asyncio.gather(*tasks)
     flat = [item for sublist in results for item in sublist]

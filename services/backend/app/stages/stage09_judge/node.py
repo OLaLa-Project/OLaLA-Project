@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
@@ -114,9 +115,19 @@ def _call_llm(
     config = _get_llm_config()
     from app.stages._shared.slm_client import SLMClient, SLMConfig
 
+    api_key = (config.api_key or "").strip()
+    if not api_key:
+        base_url_lower = (config.base_url or "").lower()
+        parsed = urlparse(config.base_url or "")
+        host = (parsed.hostname or "").lower()
+        if "ollama" in base_url_lower or host in {"localhost", "127.0.0.1"} or parsed.port == 11434:
+            api_key = "ollama"
+        else:
+            raise OrchestratorValidationError("JUDGE_API_KEY is required for external judge provider")
+
     slm_config = SLMConfig(
         base_url=config.base_url,
-        api_key=config.api_key or "ollama",
+        api_key=api_key,
         model=config.model,
         timeout=config.timeout_seconds,
         max_tokens=config.max_tokens,
@@ -360,6 +371,7 @@ def _build_final_verdict(
     formatted_citations = _format_citations(selected_ids, evidence_index, citation_index)
 
     llm_config = _get_llm_config()
+    provider = _infer_provider_name(llm_config.base_url)
 
     return {
         "analysis_id": trace_id,
@@ -373,7 +385,7 @@ def _build_final_verdict(
         "recommended_next_steps": [judge_result.get("recommendation", "")] if judge_result.get("recommendation") else [],
         "risk_flags": judge_result.get("risk_flags", []),
         "model_info": {
-            "provider": "openai",
+            "provider": provider,
             "model": llm_config.model,
             "version": "v1.0",
         },
@@ -387,6 +399,19 @@ def _build_final_verdict(
         "explanation": judge_result.get("explanation", ""),
         "evidence_summary": judge_result.get("evidence_summary", []),
     }
+
+
+def _infer_provider_name(base_url: str) -> str:
+    host = (urlparse(base_url or "").netloc or "").lower()
+    if "openai" in host:
+        return "openai"
+    if "perplexity" in host:
+        return "perplexity"
+    if "anthropic" in host:
+        return "anthropic"
+    if "ollama" in host:
+        return "ollama"
+    return "custom"
 
 
 def _build_user_result(judge_result: Dict[str, Any], claim_text: str) -> Dict[str, Any]:
@@ -600,7 +625,7 @@ def run(state: dict) -> dict:
             try:
                 parsed = parse_judge_json_with_retry(
                     call_fn,
-                    max_retries=0,
+                    max_retries=2,
                     retry_call_fn=retry_call_fn,
                 )
             except JSONParseError as e:

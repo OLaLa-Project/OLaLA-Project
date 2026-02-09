@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Optional, List, Dict, cast
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,8 @@ EMBED_MISSING_CAP = 300
 EMBED_MISSING_BATCH = 64
 SNIPPET_CHARS = 240
 RERANK_OVERSAMPLE = 20 # How many times top_k to fetch for reranking
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_search_mode(requested: str) -> str:
@@ -160,14 +163,14 @@ def retrieve_wiki_hits(
     keywords = extract_keywords(q_norm)
     
     # Prepare Vector (Lazy)
-    print(f"DEBUG: retrieve_wiki_hits mode={search_mode}, keywords={keywords}")
+    logger.debug("retrieve_wiki_hits mode=%s, keywords=%s", search_mode, keywords)
     q_vec_lit = None
     if search_mode in ["auto", "vector"]:
         try:
             q_vec = embed_texts([question])[0]
             q_vec_lit = vec_to_pgvector_literal(q_vec)
         except Exception as e:
-            print(f"Warning: Failed to embed question: {e}")
+            logger.warning("Failed to embed question: %s", e)
             # If auto, fallback to fts implies continuing without vector
             if search_mode == "vector":
                 raise e
@@ -229,7 +232,7 @@ def retrieve_wiki_hits(
         try:
             updated_embeddings = ensure_wiki_embeddings(db, candidate_ids)
         except Exception as e:
-            print(f"Warning: Failed to ensure embeddings: {e}")
+            logger.warning("Failed to ensure embeddings: %s", e)
 
     # --- 2. Vector Search (Oversample) ---
     hits = []

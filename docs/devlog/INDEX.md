@@ -16,3 +16,11 @@
 - STEP-14: `STEP-14-firebase-lowercase-package-sync.md`
 - STEP-15: `STEP-15-firebase-readiness-preflight.md`
 - STEP-16: `STEP-16-deployment-channel-activation.md`
+- STEP-17: `STEP-17-llm-config-source-of-truth.md`
+- STEP-18: `STEP-18-pipeline-fail-fast-and-preflight.md`
+- STEP-19: `STEP-19-encoding-and-review-hardening.md`
+- STEP-20: `STEP-20-gpu-ollama-and-exaone-slm.md`
+- STEP-21: `STEP-21-json-stability-and-checkpoint-safety.md`
+- STEP-22: `STEP-22-stage9-external-judge-perplexity.md`
+- STEP-23: `STEP-23-android-studio-local-backend-dev-android-env.md`
+- STEP-24: `STEP-24-windows-flutter-sdk-and-emulator-debug.md`

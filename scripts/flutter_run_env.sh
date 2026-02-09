@@ -7,15 +7,15 @@ APP_DIR="$ROOT_DIR/apps/flutter"
 ENV_NAME="${1:-dev}"
 DEVICE_ID="${2:-}"
 
-case "$ENV_NAME" in
-  dev|beta|prod)
-    ;;
-  *)
-    echo "[error] invalid env: $ENV_NAME"
-    echo "[usage] bash scripts/flutter_run_env.sh <dev|beta|prod> [device_id]"
-    exit 1
-    ;;
-esac
+	case "$ENV_NAME" in
+	  dev|dev_android|dev_emulator|beta|prod)
+	    ;;
+	  *)
+	    echo "[error] invalid env: $ENV_NAME"
+	    echo "[usage] bash scripts/flutter_run_env.sh <dev|dev_android|dev_emulator|beta|prod> [device_id]"
+	    exit 1
+	    ;;
+	esac
 
 ENV_FILE="$APP_DIR/config/env/${ENV_NAME}.json"
 if [ ! -f "$ENV_FILE" ]; then

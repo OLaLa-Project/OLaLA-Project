@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from app.core.async_utils import run_async_in_sync
 from app.core.schemas import Citation, ModelInfo, TruthCheckRequest, TruthCheckResponse
 from app.core.observability import record_stage_result
+from app.core.settings import settings
 from app.graph.graph import STAGE_OUTPUT_KEYS, build_langgraph, run_stage_sequence
 from app.graph.checkpoint import resolve_checkpoint_thread_id
 from app.graph.state import GraphState
@@ -185,13 +186,16 @@ def run_pipeline(req: TruthCheckRequest) -> TruthCheckResponse:
         out = run_stage_sequence(state, req.start_stage, req.end_stage)
         return _build_response(_fill_checkpoint_meta(cast(dict[str, Any], out), state), state["trace_id"])
     except Exception as e:
-        logger.error(f"Sync pipeline failed: {e}")
+        # Use exception() to preserve stacktrace. str(e) can be empty for some exception types.
+        logger.exception("Sync pipeline failed: %r", e)
         record_stage_result(
             req.end_stage or "pipeline_sync",
             trace_id=state.get("trace_id", "unknown"),
             duration_ms=None,
             ok=False,
         )
+        if settings.strict_pipeline:
+            raise
         return _build_response(
             {
                 "risk_flags": ["PIPELINE_CRASH"],

@@ -81,6 +81,67 @@ def extract_entities(text: str) -> List[str]:
 from app.stages._shared.guardrails import parse_json_safe
 from app.orchestrator.schemas.normalization import NormalizedClaim
 
+_META_CLAIM_MARKERS = (
+    "소문",
+    "루머",
+    "의혹",
+    "논란",
+    "가능성",
+    "추정",
+    "추측",
+    "풍문",
+    "카더라",
+    "낚시",
+    "가짜뉴스",
+    "허위",
+)
+
+
+def _select_primary_claim(normalize_claims: Any) -> str:
+    """
+    Stage1이 추출한 claims(기사 문장 그대로)를 기반으로,
+    downstream(증거 검색/판정)이 실제로 검증할 "원자적 주장" 1개를 고른다.
+
+    기존 claim_text는 2~3문장 내러티브 요약이라,
+    'OOO 사망설이 퍼지고 있다' 같은 메타 서술이 TRUE로 판정되는 오탐을 유발할 수 있다.
+    """
+    if not isinstance(normalize_claims, list):
+        return ""
+
+    best_text = ""
+    best_score = -10_000
+
+    for item in normalize_claims:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("주장") or item.get("claim") or item.get("text") or ""
+        if not isinstance(text, str):
+            continue
+        text = text.strip()
+        if len(text) < 6:
+            continue
+
+        claim_type = (item.get("claim_type") or "").strip()
+
+        score = len(text)
+        if any(ch.isdigit() for ch in text):
+            score += 30
+        if claim_type in {"사건", "통계", "정책", "인용"}:
+            score += 10
+        if claim_type == "논리":
+            score -= 10
+
+        # 메타/전달/루머 서술은 검증 대상 주장으로 부적합한 경우가 많아 페널티.
+        lowered = text.lower()
+        if any(marker in lowered for marker in _META_CLAIM_MARKERS):
+            score -= 25
+
+        if score > best_score:
+            best_score = score
+            best_text = text
+
+    return best_text
+
 def split_sentences(text: str) -> List[str]:
     if not text:
         return []
@@ -261,6 +322,14 @@ def run(state: dict) -> dict:
 
         # ── 5. State 업데이트 ──
         state["claim_text"] = claim_text
+        # URL/기사 입력일 때는 "내러티브 요약"이 아니라 "기사 문장 그대로의 주장"을 1개 선택해 검증한다.
+        # (요약 내러티브는 사실 여부 판정 대상이 아니라 주제 설명에 가까운 경우가 많음)
+        if url_info.get("is_valid") and state.get("normalize_claims"):
+            primary = _select_primary_claim(state.get("normalize_claims"))
+            if primary:
+                state["claim_text_narrative"] = claim_text
+                state["claim_text"] = primary
+                logger.info(f"[{trace_id}] 검증 대상 claim_text를 primary claim으로 설정: {primary[:150]}")
         state["original_intent"] = normalized_obj.original_intent # New State Field
         state["language"] = language or DEFAULT_LANGUAGE
 

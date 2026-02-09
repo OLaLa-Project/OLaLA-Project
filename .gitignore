@@ -4,6 +4,14 @@
 .runtime/
 node_modules/
 .vscode/
+.idea/
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
 data/wiki_db_dump_file/
 releases/beta/
 *.apk

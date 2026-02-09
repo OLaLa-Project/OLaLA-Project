@@ -1,4 +1,4 @@
-﻿"""
+"""
 SLM Client for OpenAI-compatible API (Ollama, vLLM 등).
 
 환경변수:
@@ -99,7 +99,6 @@ class SLMClient:
             SLMError: API 호출 실패 시
         """
         base = self.config.base_url.rstrip("/")
-        url = f"{base}/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}",
@@ -124,41 +123,106 @@ class SLMClient:
                 timeout=self.config.timeout,
             )
 
-        try:
-            response = _post_json(url, payload)
-            if response.status_code == 404:
-                # Ollama 기본 엔드포인트 fallback
-                # base URL에 /v1이 있으면 제거, 없으면 그대로 사용하여 /api/generate로 전환
-                if "/v1" in base:
-                    ollama_url = base.replace("/v1", "/api/generate")
-                else:
-                    ollama_url = f"{base}/api/generate"
-                    
-                logger.warning(f"SLM 404 Fallback: {url} -> {ollama_url}")
-                ollama_payload = {
-                    "model": self.config.model,
-                    "prompt": user_prompt,
-                    "system": system_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature if temperature is not None else self.config.temperature,
-                        "num_predict": max_tokens or self.config.max_tokens,
-                    },
-                }
-                response = _post_json(ollama_url, ollama_payload)
-            response.raise_for_status()
-            try:
-                data = response.json()
-            except Exception as e:
-                logger.error(f"SLM API 응답 파싱 실패: {e}")
-                logger.error(f"응답 본문: {response.text}")
-                raise
-            if "choices" in data:
-                content = data["choices"][0]["message"]["content"]
+        def _contains_model_not_found_message(response: requests.Response) -> bool:
+            body = (response.text or "").lower()
+            return "model" in body and "not found" in body
+
+        def _chat_completion_urls(base_url: str) -> list[str]:
+            candidates = [f"{base_url}/chat/completions"]
+            if not base_url.endswith("/v1"):
+                candidates.append(f"{base_url}/v1/chat/completions")
+            dedup: list[str] = []
+            for candidate in candidates:
+                if candidate not in dedup:
+                    dedup.append(candidate)
+            return dedup
+
+        def _native_ollama_urls(base_url: str) -> list[str]:
+            if base_url.endswith("/v1"):
+                root = base_url[:-3]
             else:
-                content = data.get("response", "")
-            logger.debug(f"SLM 응답 길이: {len(content)} chars")
-            return (content or "").strip()
+                root = base_url
+            root = root.rstrip("/")
+            return [f"{root}/api/chat", f"{root}/api/generate"]
+
+        try:
+            openai_like_payload = payload
+            last_errors: list[str] = []
+
+            for url in _chat_completion_urls(base):
+                response = _post_json(url, openai_like_payload)
+                if response.status_code == 404:
+                    if _contains_model_not_found_message(response):
+                        msg = f"모델 '{self.config.model}'이(가) 서버에 없습니다. (url={url})"
+                        logger.error(msg)
+                        raise SLMModelNotFoundError(msg)
+                    last_errors.append(f"{url} -> 404")
+                    continue
+                response.raise_for_status()
+                try:
+                    data = response.json()
+                except Exception as e:
+                    logger.error("SLM API 응답 파싱 실패: %s", e)
+                    logger.error("응답 본문: %s", response.text)
+                    raise
+                if "choices" in data:
+                    content = data["choices"][0]["message"]["content"]
+                    logger.debug("SLM 응답 길이: %d chars", len(content or ""))
+                    return (content or "").strip()
+                last_errors.append(f"{url} -> invalid_openai_response")
+
+            # OpenAI-compatible 엔드포인트가 없는 서버(또는 /v1 미설정) 대응.
+            for ollama_url in _native_ollama_urls(base):
+                if ollama_url.endswith("/api/chat"):
+                    ollama_payload = {
+                        "model": self.config.model,
+                        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                        "stream": False,
+                        "options": {
+                            "temperature": temperature if temperature is not None else self.config.temperature,
+                            "num_predict": max_tokens or self.config.max_tokens,
+                        },
+                    }
+                else:
+                    ollama_payload = {
+                        "model": self.config.model,
+                        "prompt": user_prompt,
+                        "system": system_prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": temperature if temperature is not None else self.config.temperature,
+                            "num_predict": max_tokens or self.config.max_tokens,
+                        },
+                    }
+
+                response = _post_json(ollama_url, ollama_payload)
+                if response.status_code == 404:
+                    if _contains_model_not_found_message(response):
+                        msg = f"모델 '{self.config.model}'이(가) 서버에 없습니다. (url={ollama_url})"
+                        logger.error(msg)
+                        raise SLMModelNotFoundError(msg)
+                    last_errors.append(f"{ollama_url} -> 404")
+                    continue
+                response.raise_for_status()
+                try:
+                    data = response.json()
+                except Exception as e:
+                    logger.error("SLM API 응답 파싱 실패: %s", e)
+                    logger.error("응답 본문: %s", response.text)
+                    raise
+
+                if ollama_url.endswith("/api/chat"):
+                    message = data.get("message") if isinstance(data, dict) else None
+                    content = message.get("content", "") if isinstance(message, dict) else ""
+                else:
+                    content = data.get("response", "") if isinstance(data, dict) else ""
+                logger.debug("SLM 응답 길이: %d chars", len(content or ""))
+                return (content or "").strip()
+
+            detail = ", ".join(last_errors) if last_errors else "unknown"
+            raise SLMError(
+                f"SLM 엔드포인트를 찾지 못했습니다. base_url={base}, attempts=[{detail}]"
+            )
 
         except requests.exceptions.Timeout:
             logger.error(f"SLM 타임아웃: {self.config.timeout}초 초과")
@@ -175,6 +239,11 @@ class SLMClient:
 
 class SLMError(Exception):
     """SLM 호출 관련 예외."""
+    pass
+
+
+class SLMModelNotFoundError(SLMError):
+    """요청한 모델이 서버에 없을 때 발생."""
     pass
 
 

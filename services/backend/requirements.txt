@@ -9,7 +9,10 @@ psycopg2-binary==2.9.9
 psutil==5.9.8
 pgvector==0.3.6
 trafilatura>=1.6.0
+ddgs>=9.0.0
 duckduckgo-search>=5.0.0
 langgraph>=0.0.40
+langgraph-checkpoint-postgres>=3.0.0
+psycopg[binary]>=3.3.0
 numpy>=1.26.0
 youtube-transcript-api>=0.6.2

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,30 +39,39 @@ class Settings(BaseSettings):
     slm_base_url: str = "http://localhost:8080/v1"
     slm_api_key: str = "local-slm-key"
     slm_model: str = "slm"
-    slm_timeout_seconds: int = 60
-    slm_max_tokens: int = 1024
+    slm_timeout_seconds: int = 180
+    slm_max_tokens: int = 512
     slm_temperature: float = 0.1
 
     slm1_base_url: str = "http://localhost:8080/v1"
     slm1_api_key: str = "local-slm-key"
     slm1_model: str = "gemma3:4b"
-    slm1_timeout_seconds: int = 60
-    slm1_max_tokens: int = 1024
+    slm1_timeout_seconds: int = 180
+    slm1_max_tokens: int = 512
     slm1_temperature: float = 0.1
 
     slm2_base_url: str = "http://localhost:8080/v1"
     slm2_api_key: str = "local-slm-key"
     slm2_model: str = "gemma3:4b"
-    slm2_timeout_seconds: int = 60
-    slm2_max_tokens: int = 1024
+    slm2_timeout_seconds: int = 180
+    slm2_max_tokens: int = 768
     slm2_temperature: float = 0.1
 
     judge_base_url: str = "https://api.openai.com/v1"
-    judge_api_key: str = ""
+    judge_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "JUDGE_API_KEY",
+            "OPENAI_API_KEY",
+            "PPLX_API_KEY",
+            "PERPLEXITY_API_KEY",
+        ),
+    )
     judge_model: str = "gpt-4.1"
-    judge_timeout_seconds: int = 60
-    judge_max_tokens: int = 1024
+    judge_timeout_seconds: int = 180
+    judge_max_tokens: int = 768
     judge_temperature: float = 0.2
+    strict_pipeline: bool = False
 
     db_host: str = "db"
     db_port: int = 5432

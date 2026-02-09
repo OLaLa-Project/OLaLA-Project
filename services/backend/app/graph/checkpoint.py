@@ -232,32 +232,16 @@ def _build_memory_checkpointer() -> Any | None:
 
 
 def _build_postgres_checkpointer() -> Any | None:
-    try:
-        from langgraph.checkpoint.postgres import PostgresSaver
-    except Exception as exc:  # pragma: no cover - optional dependency
-        logger.warning("PostgresSaver not available (%s); fallback to memory backend.", exc)
-        return _build_memory_checkpointer()
+    """
+    NOTE (2026-02-09):
+    현재 LangGraph 실행 경로가 async 노드 기반(ainvoke/astream)이라 체크포인터도 async 메서드 구현이 필요합니다.
+    langgraph-checkpoint-postgres의 sync PostgresSaver는 aget_tuple 등을 구현하지 않아 런타임 크래시를 유발할 수 있습니다.
 
-    conn_str = settings.database_url_resolved
-    if hasattr(PostgresSaver, "from_conn_string"):
-        for candidate in (conn_str, conn_str.replace("postgresql://", "postgres://", 1)):
-            try:
-                saver = PostgresSaver.from_conn_string(candidate)
-                if saver is not None:
-                    if hasattr(saver, "setup"):
-                        saver.setup()
-                    return saver
-            except Exception:
-                continue
-
-    try:
-        saver = PostgresSaver(conn_str)
-        if hasattr(saver, "setup"):
-            saver.setup()
-        return saver
-    except Exception as exc:
-        logger.warning("Failed to initialize PostgresSaver (%s); fallback to memory backend.", exc)
-        return _build_memory_checkpointer()
+    따라서 안전을 위해 일단 메모리 체크포인터로 강제 fallback 합니다.
+    Postgres 체크포인팅은 추후 "요청 처리 루프/스레드 모델"을 정리한 뒤 AsyncPostgresSaver로 재도입합니다.
+    """
+    logger.warning("Postgres checkpointer temporarily disabled for async graph; falling back to memory checkpointer.")
+    return _build_memory_checkpointer()
 
 
 def reset_checkpoint_runtime_for_test() -> None:

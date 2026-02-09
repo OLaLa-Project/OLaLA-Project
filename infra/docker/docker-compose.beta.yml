@@ -26,6 +26,10 @@ services:
     container_name: olala-ollama
     restart: unless-stopped
     profiles: ["llm"]
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     ports:
       - "11434:11434"
     volumes:
@@ -38,31 +42,8 @@ services:
     restart: unless-stopped
     env_file:
       - ../../.env.beta
-    environment:
-      DB_HOST: ${DB_HOST:-wiki-db}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-olala}
-      DB_USER: ${DB_USER:-postgres}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      DATABASE_URL: ${DATABASE_URL:-}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5175,http://127.0.0.1:5175}
-      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
-      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
-      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
-      EMBED_DIM: ${EMBED_DIM:-768}
-      WIKI_EMBEDDINGS_READY: ${WIKI_EMBEDDINGS_READY:-false}
-      SLM1_BASE_URL: ${SLM1_BASE_URL:-http://ollama:11434}
-      SLM1_API_KEY: ${SLM1_API_KEY:-ollama}
-      SLM1_MODEL: ${SLM1_MODEL:-gemma3:4b}
-      SLM2_BASE_URL: ${SLM2_BASE_URL:-http://ollama:11434}
-      SLM2_API_KEY: ${SLM2_API_KEY:-ollama}
-      SLM2_MODEL: ${SLM2_MODEL:-gemma3:4b}
-      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://ollama:11434}
-      JUDGE_API_KEY: ${JUDGE_API_KEY:-ollama}
-      JUDGE_MODEL: ${JUDGE_MODEL:-gemma3:4b}
-      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
-      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # 중요: backend 런타임 설정은 .env.beta를 단일 source of truth로 사용한다.
+    # compose environment 기본값은 env_file 값을 덮어쓰므로 의도치 않은 설정 불일치를 유발한다.
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     depends_on:

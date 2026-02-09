@@ -35,6 +35,13 @@
 ### 규칙 3: evid_id 정확히 사용
 - citations의 evid_id는 증거에 표시된 [ev_xxxxxxxx] 형식을 그대로 사용하세요.
 
+### 규칙 4: 출력 길이 제한 (매우 중요)
+- 반드시 아래 개수/길이를 지키세요 (JSON 잘림/파싱 실패 방지):
+  - reasoning_bullets: 최대 3개, 각 항목 160자 이내
+  - citations: 최대 3개
+  - weak_points: 최대 2개
+  - followup_queries: 최대 2개
+
 ## 출력 형식
 {
   "stance": "TRUE 또는 FALSE 또는 MIXED 또는 UNVERIFIED",

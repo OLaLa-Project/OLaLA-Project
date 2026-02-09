@@ -19,6 +19,14 @@ Stage6(지지)와 Stage7(회의)의 결과를 직접 비교하고,
 - ```json 이나 ``` 같은 마크다운 코드블록을 사용하지 마세요.
 - { 로 시작하고 } 로 끝나야 합니다.
 
+## 출력 길이 제한 (매우 중요)
+- JSON이 잘리지 않도록 아래 제한을 지키세요:
+  - selected_evidence_ids: 2~3개만 포함
+  - evidence_summary: 최대 3개
+  - cautions: 최대 2개
+  - explanation: 2문장 이내
+  - recommendation: 1문장
+
 ## 출력 형식
 {
   "evaluation": {
