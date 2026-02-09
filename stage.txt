@@ -1,0 +1,304 @@
+# OLaLA Stage 1~9 정리 (현재 코드 기준)
+
+작성일: 2026-02-06
+기준 코드: `backend/app/stages`, `backend/app/graph`, `backend/app/orchestrator`
+
+## 1) 파이프라인 전체 흐름
+
+기본 실행 순서:
+1. `stage01_normalize`
+2. `stage02_querygen`
+3. `adapter_queries` (내부 어댑터)
+4. `stage03_wiki`
+5. `stage03_web`
+6. `stage03_merge`
+7. `stage04_score`
+8. `stage05_topk`
+9. `stage06_verify_support`
+10. `stage07_verify_skeptic`
+11. `stage08_aggregate`
+12. `stage09_judge`
+
+참고:
+- 사용자 관점에서는 Stage 1~9로 이해하면 되고, Stage 3은 내부적으로 `wiki/web/merge`로 분리되어 실행됩니다.
+- `stage03_collect`는 public alias이며, 시작점은 `stage03_wiki`, 종료점은 `stage03_merge`로 매핑됩니다.
+
+---
+
+## 2) Stage별 의미와 사용 방법
+
+## Stage 1 - `stage01_normalize`
+
+의미:
+- 입력(`text/url/image`)을 정규화하고 검증 대상 주장(`claim_text`)을 만든다.
+- URL이 있으면 본문/제목을 prefetch하여 `canonical_evidence`를 구성한다.
+- LLM 정규화(`normalize_mode=llm`) 또는 기본 정규화(`normalize_mode=basic`)를 수행한다.
+
+주요 입력(state):
+- `input_type`, `input_payload`, `user_request`, `language`, `normalize_mode`
+
+주요 출력(state):
+- `claim_text`
+- `canonical_evidence` (`snippet`, `fetched_content`, `article_title`, `source_url`, `source_type`)
+- `entity_map`
+- `original_intent`
+
+사용 포인트:
+- 일반적으로 파이프라인 시작 Stage.
+- URL 기반 검증은 Stage1 품질이 이후 전체 정확도에 가장 큰 영향을 줌.
+
+---
+
+## Stage 2 - `stage02_querygen`
+
+의미:
+- Stage1의 주장/맥락을 기반으로 검색 쿼리 세트를 생성한다.
+- LLM 실패 시 규칙 기반 fallback 쿼리를 생성한다.
+- YouTube source인 경우 쿼리 길이/타입별 보정 로직이 적용된다.
+
+주요 입력(state):
+- `claim_text`
+- `canonical_evidence`
+- `normalize_claims` (선택)
+- `querygen_prompt` (선택, 프롬프트 override)
+
+주요 출력(state):
+- `query_variants`
+- `keyword_bundles`
+- `search_constraints`
+- `slm_raw_querygen`, `prompt_querygen_user/system`
+
+사용 포인트:
+- 검색 품질 튜닝 시 `querygen_prompt`를 API 요청에 넣어 실험 가능.
+- 다음 단계(Stage3)는 이 결과를 기반으로 실제 수집을 진행.
+
+---
+
+## Stage 3 - `stage03_collect` (내부 3분할)
+
+의미:
+- 다중 소스 증거 수집 단계.
+- 내부적으로 아래 3개로 분리:
+  1. `stage03_wiki`: 위키/지식베이스 수집
+  2. `stage03_web`: Naver News + DuckDuckGo 수집
+  3. `stage03_merge`: 병합 및 자기참조 제거
+
+주요 입력(state):
+- `search_queries` (adapter가 생성) 또는 `query_variants`
+- `canonical_evidence` (self-reference filtering에 사용)
+
+주요 출력(state):
+- `wiki_candidates`
+- `web_candidates`
+- `evidence_candidates` (merge 결과)
+
+사용 포인트:
+- API rate limit/retry/timeout 정책이 적용되는 구간.
+- 수집 노이즈는 `stage03_merge`에서 source URL/제목 유사도 기반으로 걸러짐.
+
+---
+
+## Stage 4 - `stage04_score`
+
+의미:
+- 수집된 증거 후보에 점수를 부여한다.
+- 위키 계열은 hybrid score(벡터/FTS/lexical), 웹 계열은 단순화된 lexical 기반 점수를 사용.
+
+주요 입력(state):
+- `evidence_candidates`
+- `claim_text`
+
+주요 출력(state):
+- `scored_evidence`
+
+사용 포인트:
+- Stage5 Top-K 선택의 품질은 Stage4 점수 분포에 직접 좌우됨.
+
+---
+
+## Stage 5 - `stage05_topk`
+
+의미:
+- 점수 기준으로 최종 증거를 선별하고 citation 형태로 표준화한다.
+- quota 방식: 위키 최대 3 + 뉴스/웹 최대 3.
+- 웹/뉴스 증거는 WebRAG enrichment를 비동기로 수행한다.
+
+주요 입력(state):
+- `scored_evidence`
+- `claim_text`
+
+주요 출력(state):
+- `citations`
+- `evidence_topk`
+- `risk_flags` (`LOW_EVIDENCE` 가능)
+
+사용 포인트:
+- Stage5는 async-native 경로를 사용.
+- Stage6/7은 `evidence_topk`를 직접 사용하므로 필수 연결 단계.
+
+---
+
+## Stage 6 - `stage06_verify_support`
+
+의미:
+- 동일 증거를 "지지 관점"으로 해석해 DraftVerdict를 만든다.
+
+주요 입력(state):
+- `claim_text`
+- `language`
+- `evidence_topk`
+
+주요 출력(state):
+- `verdict_support`
+- `slm_raw_support`, `prompt_support_user/system`
+
+사용 포인트:
+- JSON 파싱 실패/SLM 오류 시 fallback verdict(UNVERIFIED)로 진행.
+
+---
+
+## Stage 7 - `stage07_verify_skeptic`
+
+의미:
+- 동일 증거를 "회의 관점"으로 해석해 DraftVerdict를 만든다.
+
+주요 입력(state):
+- `claim_text`
+- `language`
+- `evidence_topk`
+
+주요 출력(state):
+- `verdict_skeptic`
+- `slm_raw_skeptic`, `prompt_skeptic_user/system`
+
+사용 포인트:
+- Stage6과 대칭 구조.
+- Stage8에서 Support/Skeptic 결과를 함께 정제함.
+
+---
+
+## Stage 8 - `stage08_aggregate`
+
+의미:
+- Stage9가 판정하기 쉽도록 Support/Skeptic 결과를 정규화하고 패킹한다.
+- 이 단계 자체는 최종 TRUE/FALSE 판정을 하지 않는다.
+
+주요 입력(state):
+- `verdict_support`
+- `verdict_skeptic`
+- `evidence_topk`
+
+주요 출력(state):
+- `support_pack`
+- `skeptic_pack`
+- `evidence_index`
+- `judge_prep_meta`
+
+사용 포인트:
+- Stage9의 입력 계약을 맞춰주는 인터페이스 단계.
+
+---
+
+## Stage 9 - `stage09_judge`
+
+의미:
+- 최종 판정 단계(TRUE/FALSE).
+- Stage6/7 결과 + Stage8 인덱스 + Judge 전용 추가 retrieval을 함께 보고 최종 verdict 생성.
+- 결과를 API 응답 스키마(`final_verdict`)와 UI 친화 포맷(`user_result`)으로 구성.
+
+주요 입력(state):
+- `claim_text`
+- `support_pack`
+- `skeptic_pack`
+- `evidence_index`
+- `search_mode` (Judge retrieval에 사용)
+
+주요 출력(state):
+- `final_verdict`
+- `user_result`
+- `risk_flags`
+- `judge_retrieval`
+- `slm_raw_judge`, `prompt_judge_user/system`
+
+사용 포인트:
+- LLM Judge 실패 시 rule-based fallback 판정 경로가 있음.
+- 최종 API `label/confidence/summary/citations`는 이 Stage 산출물 기반.
+
+---
+
+## 3) 실제 사용 방법 (API 관점)
+
+주요 엔드포인트:
+- 동기: `POST /truth/check`
+- 스트리밍: `POST /api/truth/check/stream`
+
+요청 공통 모델(`TruthCheckRequest`) 핵심 필드:
+- `input_type`, `input_payload`
+- `start_stage`, `end_stage` (부분 실행)
+- `stage_state` (중간 실행용 상태 주입)
+- `querygen_prompt` (Stage2 커스텀)
+- `normalize_mode` (`llm`/`basic`)
+
+### A. 전체 파이프라인 실행 예시
+```json
+{
+  "input_type": "text",
+  "input_payload": "쿠팡 물류센터 사고 은폐 의혹",
+  "language": "ko"
+}
+```
+
+### B. Stage2까지만 실행 예시 (쿼리 생성 확인)
+```json
+{
+  "input_type": "text",
+  "input_payload": "검증할 주장",
+  "end_stage": "stage02_querygen"
+}
+```
+
+### C. Stage3부터 재실행 예시
+```json
+{
+  "input_type": "text",
+  "input_payload": "placeholder",
+  "start_stage": "stage03_collect",
+  "end_stage": "stage05_topk",
+  "stage_state": {
+    "claim_text": "검증할 주장",
+    "query_variants": [
+      {"type": "wiki", "text": "쿠팡"},
+      {"type": "news", "text": "쿠팡 사고 뉴스"}
+    ],
+    "canonical_evidence": {"source_url": "https://example.com/article"}
+  }
+}
+```
+
+### D. Stage9만 재판정 예시
+```json
+{
+  "input_type": "text",
+  "input_payload": "placeholder",
+  "start_stage": "stage09_judge",
+  "end_stage": "stage09_judge",
+  "stage_state": {
+    "claim_text": "검증할 주장",
+    "support_pack": {"stance": "SUPPORT", "citations": []},
+    "skeptic_pack": {"stance": "SKEPTIC", "citations": []},
+    "evidence_index": {}
+  }
+}
+```
+
+---
+
+## 4) 운영/디버깅 시 핵심 체크포인트
+
+- Stage1: `canonical_evidence.article_title`, `claim_text`가 정상 생성되는지
+- Stage2: `query_variants`가 비어있지 않은지
+- Stage3: `evidence_candidates` 개수와 self-reference 필터 결과
+- Stage4/5: score 분포와 `LOW_EVIDENCE` 발생 여부
+- Stage6/7: `citations` 정합성, JSON 파싱 실패율
+- Stage8/9: `support_pack/skeptic_pack/evidence_index` 계약 일치 여부
+- 최종: `final_verdict.label`, `confidence`, `risk_flags` 검토
