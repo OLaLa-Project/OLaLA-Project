@@ -7,7 +7,8 @@ import 'dart:io';
 import '../models/evidence_card.dart';
 import '../models/verification_request.dart';
 import '../repository/verify_repository.dart';
-import '../repository/mock_verify_repository.dart';
+import '../repository/api_verify_repository.dart';
+import '../../../shared/network/api_endpoints.dart';
 import '../../shell/shell_controller.dart';
 import '../../settings/settings_screen.dart';
 import '../../history/history_screen.dart';
@@ -27,7 +28,8 @@ class ResultController extends GetxController {
   late final VerifyRepository _repository;
 
   ResultController({VerifyRepository? repository})
-      : _repository = repository ?? MockVerifyRepository();
+    : _repository =
+          repository ?? ApiVerifyRepository(baseUrl: ApiEndpoints.apiBase);
   static const double _shareImageShortSide = 1080;
   static const Duration _shareRenderDelay = Duration(seconds: 1);
 
@@ -300,7 +302,6 @@ class ResultController extends GetxController {
     return Size(_shareImageShortSide, height);
   }
 
-
   String _defaultHeadline(VerdictType v) {
     switch (v) {
       case VerdictType.trueClaim:
@@ -326,5 +327,4 @@ class ResultController extends GetxController {
         return 'UNVERIFIED';
     }
   }
-
 }

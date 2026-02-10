@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     max_chat_history_limit: int = 200
     max_message_length: int = 500
 
+    verify_provider: str = "auto"
+    verify_search_limit: int = 5
+    verify_request_timeout_seconds: int = 20
+    verify_search_api_url: str = "https://api.duckduckgo.com/"
+
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_verify_model: str = "gpt-4o-mini"
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _normalize_cors_origins(cls, value: object) -> str:

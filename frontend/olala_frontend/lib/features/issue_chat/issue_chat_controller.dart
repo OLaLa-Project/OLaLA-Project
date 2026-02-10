@@ -117,60 +117,11 @@ class IssueChatController extends GetxController {
 
   /// 메시지 전송
   Future<void> sendMessage() async {
-    final user = currentUser.value;
-    final content = textController.text.trim();
-    if (content.isEmpty || user == null) return;
-
-    if (content.length > _maxMessageLength) {
-      Get.snackbar(
-        '입력 제한',
-        '메시지는 $_maxMessageLength자 이하로 입력해주세요.',
-        snackPosition: SnackPosition.BOTTOM,
-      );
-      return;
-    }
-
-    isSending.value = true;
-    final now = DateTime.now();
-    final clientId =
-        'c_${now.microsecondsSinceEpoch}_${_random.nextInt(999).toString().padLeft(3, '0')}';
-
-    final tempMessage = ChatMessage(
-      id: clientId,
-      userId: user.id,
-      username: user.nickname,
-      content: content,
-      timestamp: now,
-      isMine: true,
-      reactionCount: 0,
-      isReactedByMe: false,
-      deliveryStatus: MessageDeliveryStatus.pending,
-      sendAttempts: 0,
+    await _sendMessageContent(
+      textController.text,
+      clearInput: true,
+      showQueueSnackbar: true,
     );
-
-    messages.add(tempMessage);
-    textController.clear();
-    _scrollToBottom();
-
-    _pendingMessages[clientId] = _PendingMessage(
-      clientId: clientId,
-      createdAt: now,
-      userId: user.id,
-      nickname: user.nickname,
-      content: content,
-    );
-    _trySendPending(clientId);
-
-    if (!isConnected.value) {
-      Get.snackbar(
-        '전송 대기',
-        '연결 복구 후 자동 전송됩니다.',
-        snackPosition: SnackPosition.BOTTOM,
-      );
-      _scheduleReconnect();
-    }
-
-    isSending.value = false;
   }
 
   /// 실패한 메시지 재시도
@@ -685,6 +636,71 @@ class IssueChatController extends GetxController {
       if (normalized == 'false') return false;
     }
     return null;
+  }
+
+  Future<void> _sendMessageContent(
+    String rawContent, {
+    required bool clearInput,
+    required bool showQueueSnackbar,
+  }) async {
+    final user = currentUser.value;
+    final content = rawContent.trim();
+    if (content.isEmpty || user == null) return;
+
+    if (content.length > _maxMessageLength) {
+      Get.snackbar(
+        '입력 제한',
+        '메시지는 $_maxMessageLength자 이하로 입력해주세요.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return;
+    }
+
+    isSending.value = true;
+    final now = DateTime.now();
+    final clientId =
+        'c_${now.microsecondsSinceEpoch}_${_random.nextInt(999).toString().padLeft(3, '0')}';
+
+    final tempMessage = ChatMessage(
+      id: clientId,
+      userId: user.id,
+      username: user.nickname,
+      content: content,
+      timestamp: now,
+      isMine: true,
+      reactionCount: 0,
+      isReactedByMe: false,
+      deliveryStatus: MessageDeliveryStatus.pending,
+      sendAttempts: 0,
+    );
+
+    messages.add(tempMessage);
+    if (clearInput) {
+      textController.clear();
+    }
+    _scrollToBottom();
+
+    _pendingMessages[clientId] = _PendingMessage(
+      clientId: clientId,
+      createdAt: now,
+      userId: user.id,
+      nickname: user.nickname,
+      content: content,
+    );
+    _trySendPending(clientId);
+
+    if (!isConnected.value) {
+      if (showQueueSnackbar) {
+        Get.snackbar(
+          '전송 대기',
+          '연결 복구 후 자동 전송됩니다.',
+          snackPosition: SnackPosition.BOTTOM,
+        );
+      }
+      _scheduleReconnect();
+    }
+
+    isSending.value = false;
   }
 
   @override

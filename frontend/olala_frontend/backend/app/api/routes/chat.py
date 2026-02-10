@@ -116,6 +116,13 @@ async def handle_bus_event(event: dict[str, Any]) -> None:
         server_at = str(event.get("serverAt") or _now_utc_iso())
         if issue_id and message_id:
             await _broadcast_reaction_updated(issue_id, message_id, count, server_at)
+        return
+
+    if event_type == "message.deleted":
+        issue_id = str(event.get("issueId") or "")
+        if issue_id:
+            await realtime_manager.broadcast(issue_id, event)
+        return
 
 
 @router.get("/chat/messages/{issue_id}")
@@ -181,6 +188,14 @@ async def chat_websocket(websocket: WebSocket, issue_id: str) -> None:
                 await _handle_reaction_toggle(connection, payload)
                 continue
 
+            if event_type == "message.delete":
+                await _handle_message_delete(connection, payload)
+                continue
+
+            if event_type == "user.kick":
+                await _handle_user_kick(connection, payload)
+                continue
+
             await realtime_manager.send_json(
                 connection,
                 {
@@ -199,6 +214,22 @@ async def chat_websocket(websocket: WebSocket, issue_id: str) -> None:
 async def _handle_join(connection: WSConnection, payload: dict[str, Any]) -> None:
     user_id = _clean_string(payload.get("userId"))
     nickname = _clean_string(payload.get("nickname"))
+
+    # Check if user is banned
+    if user_id and await realtime_manager.is_banned(connection.issue_id, user_id):
+        await realtime_manager.send_json(
+            connection,
+            {
+                "type": "error",
+                "issueId": connection.issue_id,
+                "message": "You are temporarily banned from this chat room",
+            },
+        )
+        try:
+            await connection.websocket.close(code=4003, reason="banned")
+        except Exception:
+            pass
+        return
 
     await realtime_manager.update_identity(connection, user_id, nickname)
     await _broadcast_presence(connection.issue_id)
@@ -336,6 +367,125 @@ async def _handle_reaction_toggle(
             str(payload.get("serverAt") or _now_utc_iso()),
         ),
     )
+
+
+async def _handle_message_delete(
+    connection: WSConnection,
+    payload: dict[str, Any],
+) -> None:
+    issue_id = connection.issue_id
+    message_id = _clean_string(payload.get("messageId"))
+    user_id = _clean_string(payload.get("userId")) or connection.user_id
+
+    if not message_id or not user_id:
+        await realtime_manager.send_json(
+            connection,
+            {
+                "type": "error",
+                "issueId": issue_id,
+                "message": "Invalid delete payload",
+            },
+        )
+        return
+
+    async with AsyncSessionLocal() as session:
+        try:
+            message_issue_id, _ = await ChatRepository.delete_message(
+                session,
+                message_id,
+                user_id,
+            )
+        except ValueError as e:
+            error_message = "Message not found"
+            if str(e) == "unauthorized":
+                error_message = "Only admins can delete messages"
+
+            await realtime_manager.send_json(
+                connection,
+                {
+                    "type": "error",
+                    "issueId": issue_id,
+                    "message": error_message,
+                },
+            )
+            return
+
+    # Broadcast deletion to all users in the room
+    event = {
+        "type": "message.deleted",
+        "issueId": message_issue_id,
+        "messageId": message_id,
+        "serverAt": _now_utc_iso(),
+    }
+    await _publish_or_local(
+        event,
+        lambda payload: realtime_manager.broadcast(message_issue_id, payload),
+    )
+
+
+async def _handle_user_kick(
+    connection: WSConnection,
+    payload: dict[str, Any],
+) -> None:
+    issue_id = connection.issue_id
+    target_user_id = _clean_string(payload.get("targetUserId"))
+    admin_user_id = _clean_string(payload.get("userId")) or connection.user_id
+    ban_duration = int(payload.get("banDuration", 10))  # Default 10 minutes
+
+    if not target_user_id or not admin_user_id:
+        await realtime_manager.send_json(
+            connection,
+            {
+                "type": "error",
+                "issueId": issue_id,
+                "message": "Invalid kick payload",
+            },
+        )
+        return
+
+    # Only allow non-web users (admins) to kick users
+    if admin_user_id.startswith("web_"):
+        await realtime_manager.send_json(
+            connection,
+            {
+                "type": "error",
+                "issueId": issue_id,
+                "message": "Only admins can kick users",
+            },
+        )
+        return
+
+    # Cannot kick admins
+    if not target_user_id.startswith("web_"):
+        await realtime_manager.send_json(
+            connection,
+            {
+                "type": "error",
+                "issueId": issue_id,
+                "message": "Cannot kick admin users",
+            },
+        )
+        return
+
+    # Kick the user
+    kicked_count = await realtime_manager.kick_user(
+        issue_id,
+        target_user_id,
+        ban_duration,
+    )
+
+    if kicked_count > 0:
+        # Broadcast kick notification to remaining users
+        event = {
+            "type": "user.kicked.notification",
+            "issueId": issue_id,
+            "userId": target_user_id,
+            "serverAt": _now_utc_iso(),
+        }
+        await _publish_or_local(
+            event,
+            lambda payload: realtime_manager.broadcast(issue_id, payload),
+        )
 
 
 def _clean_string(value: object) -> str | None:

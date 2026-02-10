@@ -234,3 +234,43 @@ class ChatRepository:
             MessageReaction.user_id.in_(user_ids),
         )
         return set((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    async def delete_message(
+        cls,
+        session: AsyncSession,
+        message_id: str,
+        user_id: str,
+    ) -> tuple[str, bool]:
+        """
+        Delete a message. Only non-web users (admins) can delete messages.
+
+        Returns:
+            tuple[str, bool]: (issue_id, was_deleted)
+        """
+        message = await session.get(ChatMessage, message_id)
+        if message is None:
+            raise ValueError("message_not_found")
+
+        # Only allow non-web users (admins) to delete messages
+        if user_id.startswith("web_"):
+            raise ValueError("unauthorized")
+
+        issue_id = message.issue_id
+
+        # Delete associated reactions first
+        await session.execute(
+            delete(MessageReaction).where(
+                MessageReaction.message_id == message_id,
+            ),
+        )
+
+        # Delete the message
+        await session.execute(
+            delete(ChatMessage).where(
+                ChatMessage.id == message_id,
+            ),
+        )
+
+        await session.commit()
+        return issue_id, True

@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:phosphor_flutter/phosphor_flutter.dart';
 
+import '../../app/routes.dart';
+import '../home_input/home_input_screen.dart';
+import '../shell/shell_controller.dart';
 import 'models/daily_issue.dart';
 import 'models/chat_message.dart';
 import 'issue_chat_controller.dart';
@@ -128,6 +131,9 @@ class IssueChatScreen extends StatelessWidget {
             }),
           ),
 
+          // 이슈 판별 FAB (입력창 위)
+          _IssueVerifyFab(isDark: isDark, onTap: _openHomeInputForVerification),
+
           // 메시지 입력창
           Obx(
             () => ChatInputField(
@@ -239,6 +245,87 @@ class IssueChatScreen extends StatelessWidget {
               ),
             )
           : const SizedBox.shrink(),
+    );
+  }
+
+  void _openHomeInputForVerification() {
+    if (Get.isRegistered<ShellController>()) {
+      final shellController = Get.find<ShellController>();
+      shellController.setTab(1);
+
+      var foundShellRoute = false;
+      Get.until((route) {
+        final isShell = route.settings.name == AppRoutes.shell;
+        if (isShell) {
+          foundShellRoute = true;
+        }
+        return isShell || route.isFirst;
+      });
+
+      if (foundShellRoute || Get.currentRoute == AppRoutes.shell) {
+        return;
+      }
+    }
+
+    Get.to(() => const HomeInputScreen());
+  }
+}
+
+class _IssueVerifyFab extends StatelessWidget {
+  const _IssueVerifyFab({required this.isDark, required this.onTap});
+
+  final bool isDark;
+  final VoidCallback onTap;
+
+  static const Color _fab = Color(0xFF4683F6);
+  static const Color _border = Color(0xFFE4E8F1);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 10, 8),
+        child: Tooltip(
+          message: '이슈 판별하기',
+          child: Material(
+            color: Colors.transparent,
+            shape: const CircleBorder(),
+            child: InkWell(
+              onTap: onTap,
+              customBorder: const CircleBorder(),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                width: 50,
+                height: 50,
+                decoration: BoxDecoration(
+                  color: _fab,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: isDark ? theme.colorScheme.outlineVariant : _border,
+                    width: 1.2,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: _fab.withValues(alpha: isDark ? 0.44 : 0.32),
+                      blurRadius: 14,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  PhosphorIconsRegular.magnifyingGlass,
+                  size: 24,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
