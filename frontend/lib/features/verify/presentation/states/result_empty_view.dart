@@ -12,20 +12,25 @@ class ResultEmptyView extends GetView<ResultController> {
 
   @override
   Widget build(BuildContext context) {
-    // ✅ home_input, result_success와 통일된 배경색
-    const bg = Color(0xFFF7F7F7);
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final bg = isDark
+        ? theme.colorScheme.surfaceVariant
+        : const Color(0xFFF7F7F7);
 
     return Scaffold(
       backgroundColor: bg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
+        backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
+        foregroundColor: isDark ? theme.colorScheme.onSurface : Colors.black,
         elevation: 0,
-        surfaceTintColor: Colors.white,
+        surfaceTintColor: isDark ? theme.colorScheme.surface : Colors.white,
         toolbarHeight: 56,
         shape: Border(
           bottom: BorderSide(
-            color: Colors.black.withOpacity( 0.06),
+            color: isDark
+                ? theme.colorScheme.outlineVariant.withOpacity(0.7)
+                : Colors.black.withOpacity( 0.06),
             width: 1,
           ),
         ),
@@ -114,7 +119,7 @@ class ResultEmptyView extends GetView<ResultController> {
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: isDark ? theme.colorScheme.surface : Colors.white,
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity( 0.06),
@@ -127,18 +132,26 @@ class ResultEmptyView extends GetView<ResultController> {
           data: NavigationBarThemeData(
             indicatorColor: Colors.transparent,
             overlayColor: MaterialStateProperty.all(Colors.transparent),
-            backgroundColor: Colors.white,
+            backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
             iconTheme: MaterialStateProperty.resolveWith<IconThemeData>((states) {
               final selected = states.contains(MaterialState.selected);
               return IconThemeData(
                 size: 32,
-                color: selected ? Colors.black : const Color(0xff7a7a7a),
+                color: selected
+                    ? (isDark ? theme.colorScheme.onSurface : Colors.black)
+                    : (isDark
+                          ? theme.colorScheme.onSurfaceVariant
+                          : const Color(0xff7a7a7a)),
               );
             }),
             labelTextStyle: MaterialStateProperty.resolveWith<TextStyle>((states) {
               final selected = states.contains(MaterialState.selected);
               return TextStyle(
-                color: selected ? Colors.black : const Color(0xff7a7a7a),
+                color: selected
+                    ? (isDark ? theme.colorScheme.onSurface : Colors.black)
+                    : (isDark
+                          ? theme.colorScheme.onSurfaceVariant
+                          : const Color(0xff7a7a7a)),
                 fontSize: 12,
               );
             }),

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     ollama_url: str = "http://ollama:11434"
     ollama_timeout: float = 60.0
     embed_model: str = "dragonkue/multilingual-e5-small-ko-v2"
+    wiki_query_embed_backend: str = "auto"
+    wiki_query_embed_model: str = ""
     embed_dim: int = 384
 
     naver_client_id: str = ""
@@ -36,17 +38,34 @@ class Settings(BaseSettings):
     naver_max_concurrency: int = 3
     ddg_max_concurrency: int = 3
     stage3_ddg_max_results: int = 100
+    stage3_web_query_max_chars: int = 50
+    stage3_web_naver_min_results: int = 3
+    stage3_web_ddg_fallback_max_results: int = 8
+    stage3_wiki_result_cap: int = 1
     stage3_global_candidate_cap: int = 120
     stage3_source_cap_news: int = 60
     stage3_source_cap_wiki: int = 35
     stage3_source_cap_web: int = 25
     stage2_enable_stance_split: bool = True
+    stage2_wiki_vector_single_enabled: bool = True
+    stage2_web_keyword_rewrite_enabled: bool = True
+    stage3_web_query_cap_per_claim: int = 3
+    stage3_wiki_strict_vector_only: bool = True
     stage3_html_signal_enabled: bool = True
     stage3_html_signal_top_n: int = 20
     stage3_html_signal_timeout_seconds: float = 3.0
+    stage3_merge_min_overlap: float = 0.12
+    stage3_merge_soft_overlap: float = 0.22
+    stage3_merge_low_overlap_score_cap: float = 0.74
+    stage3_merge_low_overlap_rescue_score_cap: float = 0.46
     stage3_source_tier_overrides_json: str = ""
     stage5_threshold_standard: float = 0.70
-    stage5_threshold_rumor: float = 0.78
+    stage5_threshold_mixed: float = 0.55
+    stage5_threshold_rumor: float = 0.68
+    stage5_threshold_backoff_step: float = 0.05
+    stage5_threshold_backoff_target_min: int = 4
+    stage5_threshold_backoff_min_mixed: float = 0.45
+    stage5_threshold_backoff_min_rumor: float = 0.50
     stage5_topk_standard: int = 8
     stage5_topk_rumor: int = 6
     stage5_topk_support: int = 3
@@ -54,8 +73,15 @@ class Settings(BaseSettings):
     stage5_domain_cap: int = 2
     stage4_credibility_adjust_weight_news_web: float = 0.20
     stage4_credibility_adjust_weight_wiki: float = 0.08
+    stage4_low_overlap_threshold: float = 0.18
     stage5_soft_split_enabled: bool = True
     stage5_shared_trust_min: float = 0.68
+    stage5_skeptic_rescue_enabled: bool = True
+    stage5_skeptic_rescue_min_score: float = 0.40
+    stage5_skeptic_rescue_max_items: int = 2
+    stage5_failopen_enabled: bool = True
+    stage5_failopen_min_items: int = 3
+    stage5_failopen_min_score: float = 0.08
     stage6_rumor_required_intents_csv: str = "official_statement,fact_check"
     stage67_prompt_evidence_limit: int = 4
     stage67_prompt_snippet_max_chars: int = 180
@@ -144,6 +170,14 @@ class Settings(BaseSettings):
         if backend in {"memory", "postgres", "none"}:
             return backend
         return "postgres"
+
+    @field_validator("wiki_query_embed_backend", mode="before")
+    @classmethod
+    def _normalize_wiki_query_embed_backend(cls, value: str) -> str:
+        backend = str(value or "ollama").strip().lower()
+        if backend in {"ollama", "hf", "auto"}:
+            return backend
+        return "ollama"
 
     @property
     def cors_origins_list(self) -> list[str]:

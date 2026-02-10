@@ -81,9 +81,15 @@ class ResultController extends GetxController {
 
   /// 사용자의 원본 질문
   final userQuery = ''.obs;
+  
+  /// 추출된 핵심 주장 (기사에서 주장하는 바)
+  final extractedClaim = ''.obs;
 
   /// 근거 카드 리스트
   final RxList<EvidenceCard> evidenceCards = <EvidenceCard>[].obs;
+  final RxList<String> resultRiskFlags = <String>[].obs;
+  final verdictBadgeText = ''.obs;
+  final responseSchemaVersion = ''.obs;
 
   // ─────────────────────────────────────────
   // UX Actions (프로젝트 라우팅에 맞춰 구현)
@@ -294,6 +300,9 @@ class ResultController extends GetxController {
     _scorePassRate = 0.0;
     _supportCitationCount = 0;
     _skepticCitationCount = 0;
+    resultRiskFlags.clear();
+    verdictBadgeText.value = '';
+    responseSchemaVersion.value = '';
     bool receivedComplete = false;
     _startStreamWatchdog();
 
@@ -640,20 +649,21 @@ class ResultController extends GetxController {
 
     if (stageName == 'stage01_normalize') {
       final claim = (stageData['claim_text'] as String?)?.trim() ?? '';
+      if (claim.isNotEmpty) {
+        extractedClaim.value = claim;
+      }
       _latestClaimMode = _claimModeLabel(stageData['claim_mode']);
       if (claim.isEmpty) {
         return;
       }
-      final detail = '주장: ${_clipText(claim)} · 모드: $_latestClaimMode';
+      final detail = '주장: ${_clipText(claim)}';
       step1Detail.value = detail;
       loadingSubtext.value = detail;
       return;
     }
 
     if (stageName == 'stage02_querygen') {
-      final modeText =
-          _latestClaimMode.isNotEmpty ? ' · 모드: $_latestClaimMode' : '';
-      final detail = '검증 포인트 정리 완료$modeText';
+      final detail = '검증 포인트 정리 완료';
       step1Detail.value = detail;
       loadingSubtext.value = detail;
       return;
@@ -725,8 +735,8 @@ class ResultController extends GetxController {
         final count = _citationCountFromPack(supportPack);
         final representative = _representativeCitation(supportPack);
         final detail = representative.isNotEmpty
-            ? '지지 판정: $stance ($confidencePct) · 인용 $count건 · 대표 "$representative"'
-            : '지지 판정: $stance ($confidencePct) · 인용 $count건';
+            ? '지지 신뢰도: $confidencePct · 인용 $count건 · 대표 "$representative"'
+            : '지지 신뢰도: $confidencePct · 인용 $count건';
         step3Detail.value = detail;
         loadingSubtext.value = detail;
       }
@@ -742,8 +752,8 @@ class ResultController extends GetxController {
         final count = _citationCountFromPack(skepticPack);
         final representative = _representativeCitation(skepticPack);
         final detail = representative.isNotEmpty
-            ? '반박 판정: $stance ($confidencePct) · 인용 $count건 · 대표 "$representative"'
-            : '반박 판정: $stance ($confidencePct) · 인용 $count건';
+            ? '반박 신뢰도: $confidencePct · 인용 $count건 · 대표 "$representative"'
+            : '반박 신뢰도: $confidencePct · 인용 $count건';
         step3Detail.value = detail;
         loadingSubtext.value = detail;
       }
@@ -920,12 +930,21 @@ class ResultController extends GetxController {
   Map<String, dynamic> _extractGatewayResultPayload(Map<String, dynamic> raw) {
     final direct = Map<String, dynamic>.from(raw);
 
+    final directResult = _asMap(direct['result']);
+    if (directResult != null) {
+      return directResult;
+    }
+
     if (direct['label'] is String) {
       return direct;
     }
 
     final data = _asMap(direct['data']);
     if (data != null) {
+      final nestedResult = _asMap(data['result']);
+      if (nestedResult != null) {
+        return nestedResult;
+      }
       if (data['label'] is String) {
         return data;
       }
@@ -947,6 +966,22 @@ class ResultController extends GetxController {
     final explanation = (result.explanation ?? '').trim();
     if (explanation.isNotEmpty) {
       return explanation;
+    }
+
+    final evaluationReason = (result.evaluationReason ?? '').trim();
+    if (evaluationReason.isNotEmpty) {
+      return evaluationReason;
+    }
+
+    if (result.evidenceSummary.isNotEmpty) {
+      final points = result.evidenceSummary
+          .map((item) => (item['point'] ?? '').toString().trim())
+          .where((item) => item.isNotEmpty)
+          .take(2)
+          .toList(growable: false);
+      if (points.isNotEmpty) {
+        return points.join('\n');
+      }
     }
 
     if (result.rationale.isNotEmpty) {
@@ -982,12 +1017,39 @@ class ResultController extends GetxController {
     return '$reason\n\n${hints.join('\n')}';
   }
 
+  List<EvidenceCard> _buildEvidenceCards(VerificationResult result) {
+    final source = result.citations.isNotEmpty ? result.citations : result.evidenceSummary;
+    final cards = source.map(EvidenceCard.fromJson).where((card) {
+      final hasTitle = (card.title ?? '').trim().isNotEmpty;
+      final hasSnippet = (card.snippet ?? '').trim().isNotEmpty;
+      final hasUrl = (card.url ?? '').trim().isNotEmpty;
+      return hasTitle || hasSnippet || hasUrl;
+    }).toList(growable: false);
+    return cards;
+  }
+
+  String _buildVerdictBadgeText(VerificationResult result) {
+    final korean = (result.verdictKorean ?? '').trim();
+    if (korean.isEmpty) {
+      return result.label.toUpperCase();
+    }
+    return '$korean ${result.confidencePercent}%';
+  }
+
   void _processResult(Map<String, dynamic> resultMap) {
     final payload = _extractGatewayResultPayload(resultMap);
     final parsed = VerificationResult.fromJson(payload);
 
     verdictType.value = _parseVerdict(parsed.label);
-    confidence.value = parsed.confidence.clamp(0.0, 1.0);
+    final normalizedConfidence = parsed.confidence.clamp(0.0, 1.0);
+    if (normalizedConfidence <= 0.0 && parsed.confidencePercentRaw != null) {
+      confidence.value = (parsed.confidencePercent / 100.0).clamp(0.0, 1.0);
+    } else {
+      confidence.value = normalizedConfidence;
+    }
+    resultRiskFlags.value = parsed.riskFlags;
+    verdictBadgeText.value = _buildVerdictBadgeText(parsed);
+    responseSchemaVersion.value = parsed.schemaVersion ?? '';
 
     final headlineCandidate = (parsed.headline ?? parsed.summary).trim();
     successHeadline.value =
@@ -998,8 +1060,7 @@ class ResultController extends GetxController {
     final reason = _buildReasonText(parsed);
     successReason.value = _appendRiskHint(reason, parsed);
 
-    evidenceCards.value =
-        parsed.citations.map(EvidenceCard.fromJson).toList(growable: false);
+    evidenceCards.value = _buildEvidenceCards(parsed);
   }
 
   VerdictType _parseVerdict(String label) {

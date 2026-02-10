@@ -107,4 +107,36 @@ def test_run_merge_populates_credibility_and_stats(monkeypatch):
     assert "html_enriched_count" in stats
     assert "html_fetch_fail_count" in stats
     assert "tier_distribution" in stats
+    assert "filtered_by_overlap" in stats
 
+
+def test_run_merge_rumor_mode_rescues_low_overlap_web(monkeypatch):
+    monkeypatch.setattr(collect_node.settings, "stage3_html_signal_enabled", False)
+    monkeypatch.setattr(collect_node.settings, "stage3_merge_min_overlap", 0.12)
+    monkeypatch.setattr(collect_node.settings, "stage3_merge_soft_overlap", 0.22)
+    monkeypatch.setattr(collect_node.settings, "stage3_merge_low_overlap_score_cap", 0.74)
+    monkeypatch.setattr(collect_node.settings, "stage3_merge_low_overlap_rescue_score_cap", 0.46)
+
+    state = {
+        "claim_mode": "rumor",
+        "claim_text": "유재석 악성함 합병증 사망 방송계 영향력",
+        "canonical_evidence": {"source_url": "", "article_title": ""},
+        "wiki_candidates": [],
+        "web_candidates": [
+            {
+                "source_type": "WEB_URL",
+                "title": "무관한 연예 뉴스",
+                "url": "https://example.com/a",
+                "content": "이번 예능 프로그램은 높은 시청률을 기록했다.",
+                "metadata": {"intent": "official_statement", "claim_id": "C1", "mode": "rumor", "stance": "support"},
+            }
+        ],
+    }
+
+    out = collect_node.run_merge(state)
+    stats = out["stage03_merge_stats"]
+    assert out["evidence_candidates"]
+    assert stats["filtered_by_overlap"] == 1
+    assert stats["rescued_low_overlap"] == 1
+    breakdown = out["evidence_candidates"][0]["metadata"]["pre_score_breakdown"]
+    assert breakdown.get("low_overlap_failopen") == 1.0

@@ -15,24 +15,27 @@ class InputTypeSelector extends StatelessWidget {
     required this.onSelectText,
   });
 
-  static const Color _primary = Color(0xFF4683F6);
-  static const Color _text = Color(0xFF1F1F1F);
-
+  static const Color _brand = Color(0xFF4683F6);
   static const double _height = 48.0;
   static const double _radius = 12.0; // ✅ 살짝 키워서 더 고급스럽게
 
   @override
   Widget build(BuildContext context) {
     final isUrl = selected == InputMode.url;
+    final theme = Theme.of(context);
+    final textColor = theme.brightness == Brightness.dark
+        ? theme.colorScheme.onSurface
+        : const Color(0xFF1F1F1F);
+    final primary = _brand;
 
     return Container(
       key: containerKey,
       height: _height,
       decoration: BoxDecoration(
-        color: _primary.withOpacity(0.08), // ✅ 배경 살짝 더 얇게
+        color: primary.withOpacity(0.08), // ✅ 배경 살짝 더 얇게
         borderRadius: BorderRadius.circular(_radius),
         border: Border.all(
-          color: _primary.withOpacity(0.18), // ✅ 테두리도 살짝 얇게
+          color: primary.withOpacity(0.18), // ✅ 테두리도 살짝 얇게
           width: 1,
         ),
       ),
@@ -44,8 +47,8 @@ class InputTypeSelector extends StatelessWidget {
               selected: isUrl,
               onTap: isUrl ? null : onSelectUrl, // ✅ 이미 선택이면 no-op
               isLeft: true,
-              textColor: _text,
-              primary: _primary,
+              textColor: textColor,
+              primary: primary,
             ),
           ),
           Expanded(
@@ -54,8 +57,8 @@ class InputTypeSelector extends StatelessWidget {
               selected: !isUrl,
               onTap: (!isUrl) ? null : onSelectText,
               isLeft: false,
-              textColor: _text,
-              primary: _primary,
+              textColor: textColor,
+              primary: primary,
             ),
           ),
         ],
@@ -93,6 +96,7 @@ class _Segment extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final unselectedColor = textColor.withOpacity(0.65); // ✅ 더 차분하게
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Padding(
       padding: const EdgeInsets.all(4),
@@ -103,7 +107,8 @@ class _Segment extends StatelessWidget {
           onTap: onTap,
           overlayColor: MaterialStateProperty.resolveWith((states) {
             if (states.contains(MaterialState.pressed)) {
-              return Colors.black.withOpacity(0.06); // ✅ 눌림 피드백
+              return (isDark ? Colors.white : Colors.black)
+                  .withOpacity(0.08); // ✅ 눌림 피드백
             }
             return null;
           }),

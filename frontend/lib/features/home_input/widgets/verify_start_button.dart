@@ -26,6 +26,8 @@ class VerifyStartButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return SizedBox(
       key: containerKey,
       height: _height,
@@ -43,7 +45,7 @@ class VerifyStartButton extends StatelessWidget {
           ),
           overlayColor: MaterialStateProperty.resolveWith((states) {
             if (states.contains(MaterialState.pressed)) {
-              return Colors.black.withOpacity(0.08);
+              return (isDark ? Colors.white : Colors.black).withOpacity(0.08);
             }
             return null;
           }),

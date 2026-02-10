@@ -35,15 +35,24 @@ dependencies:
   phosphor_flutter: ^2.0.0
 
   # 공유 기능
-  share_plus: ^10.0.0
+  share_plus: ^10.1.2
   screenshot: ^3.0.0
-  path_provider: ^2.1.1
+  path_provider: ^2.1.5
+
+  # 오늘의 이슈 채팅 기능
+  http: ^1.2.0                     # HTTP 클라이언트
+  web_socket_channel: ^3.0.0       # WebSocket 통신
+  uuid: ^4.2.0                     # 익명 사용자 ID 생성
+  shimmer: ^3.0.0                  # 로딩 효과
+  intl: ^0.19.0                    # 날짜/시간 포맷팅
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  url_launcher: ^6.2.5
-  http: ^1.2.0
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.2.0
+  url_launcher: ^6.3.1
+  device_preview: ^1.2.0
 
 dev_dependencies:
   flutter_test:

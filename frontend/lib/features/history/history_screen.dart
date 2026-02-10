@@ -11,42 +11,52 @@ import '../settings/settings_screen.dart';
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({super.key});
 
-  void _showClearAllDialog(BuildContext context, HistoryController c) {
+  void _showClearAllDialog(
+    BuildContext context,
+    HistoryController c,
+    bool isDark,
+  ) {
+    final theme = Theme.of(context);
+
     showDialog(
       context: context,
-      barrierColor: Colors.black.withOpacity(0.35), // ✅ 가장 많이 쓰는 딤 농도
+      barrierColor: Colors.black.withOpacity(isDark ? 0.55 : 0.35),
       builder: (_) => Dialog(
         backgroundColor: Colors.transparent,
         insetPadding: const EdgeInsets.symmetric(horizontal: 24),
         child: Container(
           padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: isDark ? theme.colorScheme.surface : Colors.white,
             borderRadius: BorderRadius.circular(16), // 카드 기본 라운드
             border: Border.all(
-              color: Colors.black.withOpacity(0.08), // ✅ 실무 최빈 보더 농도
+              color: isDark
+                  ? theme.colorScheme.outlineVariant.withOpacity(0.7)
+                  : Colors.black.withOpacity(0.08),
               width: 1,
             ),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
+              Text(
                 '전체 삭제',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
-                  color: Colors.black,
+                  color: isDark ? theme.colorScheme.onSurface : Colors.black,
                 ),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 '히스토리를 모두 삭제할까요?',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w400,
-                  color: Colors.black87,
+                  color: isDark
+                      ? theme.colorScheme.onSurface.withOpacity(0.87)
+                      : Colors.black87,
                 ),
               ),
               const SizedBox(height: 16),
@@ -56,8 +66,14 @@ class HistoryScreen extends StatelessWidget {
                     child: OutlinedButton(
                       onPressed: () => Navigator.pop(context),
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFF666666), // ✅ 취소 버튼 회색
-                        side: BorderSide(color: Colors.black.withOpacity(0.12)),
+                        foregroundColor: isDark
+                            ? theme.colorScheme.onSurfaceVariant
+                            : const Color(0xFF666666),
+                        side: BorderSide(
+                          color: isDark
+                              ? theme.colorScheme.outlineVariant
+                              : Colors.black.withOpacity(0.12),
+                        ),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
@@ -98,21 +114,31 @@ class HistoryScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     Get.lazyPut<HistoryController>(() => HistoryController());
     final c = Get.find<HistoryController>();
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final bg = isDark
+        ? theme.colorScheme.surfaceVariant
+        : const Color(0xFFF7F7F7);
 
     final shell = Get.isRegistered<ShellController>()
         ? Get.find<ShellController>()
         : null;
 
     return Scaffold(
-      backgroundColor: Color(0xFFF7F7F7),
+      backgroundColor: bg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
+        backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
+        foregroundColor: isDark ? theme.colorScheme.onSurface : Colors.black,
         elevation: 0,
-        surfaceTintColor: Colors.white, // M3 색 섞임 방지
+        surfaceTintColor: isDark ? theme.colorScheme.surface : Colors.white,
         toolbarHeight: 56,
         shape: Border(
-          bottom: BorderSide(color: Colors.black.withOpacity(0.06), width: 1),
+          bottom: BorderSide(
+            color: isDark
+                ? theme.colorScheme.outlineVariant.withOpacity(0.6)
+                : Colors.black.withOpacity(0.06),
+            width: 1,
+          ),
         ),
         leading: IconButton(
           tooltip: '뒤로가기',
@@ -131,7 +157,9 @@ class HistoryScreen extends StatelessWidget {
         ),
         centerTitle: true,
         actions: [
-          TrashIconButton(onPressed: () => _showClearAllDialog(context, c)),
+          TrashIconButton(
+            onPressed: () => _showClearAllDialog(context, c, isDark),
+          ),
           SettingsIconButton(
             onPressed: () => Get.to(() => const SettingsScreen()),
           ),
@@ -181,6 +209,9 @@ class _SettingsIconButtonState extends State<SettingsIconButton> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque, // 터치 영역 안정화(실무 필수)
       onTapDown: (_) => setState(() => _pressed = true),
@@ -196,7 +227,11 @@ class _SettingsIconButtonState extends State<SettingsIconButton> {
         child: Icon(
           _pressed ? PhosphorIconsFill.gear : PhosphorIconsRegular.gear,
           size: 32,
-          color: _pressed ? Colors.black : null,
+          color: isDark
+              ? (_pressed
+                    ? theme.colorScheme.onSurface
+                    : theme.colorScheme.onSurface.withOpacity(0.85))
+              : (_pressed ? Colors.black : null),
         ),
       ),
     );
@@ -216,6 +251,9 @@ class _TrashIconButtonState extends State<TrashIconButton> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque, // 터치 영역 안정화(실무 필수)
       onTapDown: (_) => setState(() => _pressed = true),
@@ -231,7 +269,9 @@ class _TrashIconButtonState extends State<TrashIconButton> {
         child: Icon(
           _pressed ? PhosphorIconsFill.trash : PhosphorIconsRegular.trash,
           size: 32,
-          color: _pressed ? Colors.red : null,
+          color: isDark
+              ? (_pressed ? Colors.red : theme.colorScheme.onSurfaceVariant)
+              : (_pressed ? Colors.red : null),
         ),
       ),
     );
@@ -244,8 +284,11 @@ class _EmptyHistory extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      color: Color(0xFFF7F7F7),
+      color: isDark
+          ? theme.colorScheme.surfaceVariant
+          : const Color(0xFFF7F7F7),
       child: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),

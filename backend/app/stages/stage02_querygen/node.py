@@ -31,6 +31,41 @@ _ALLOWED_INTENTS = {
 }
 _ALLOWED_STANCES = {"support", "skeptic", "neutral"}
 _RUMOR_MODES = {"rumor", "mixed"}
+_KEYWORD_STOPWORDS = {
+    "그리고",
+    "또한",
+    "대한",
+    "관련",
+    "통한",
+    "위한",
+    "이번",
+    "해당",
+    "실제",
+    "분석",
+    "검증",
+    "문제",
+    "영향",
+    "필요성",
+    "and",
+    "the",
+    "for",
+    "with",
+}
+_GENERIC_WEB_TOKENS = {
+    "기사",
+    "보도",
+    "내용",
+    "관련",
+    "검증",
+    "정보",
+    "사이트",
+    "문서",
+    "페이지",
+    "news",
+    "article",
+    "web",
+    "search",
+}
 
 
 @lru_cache(maxsize=1)
@@ -100,6 +135,261 @@ def _copy_meta(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     return dict(value)
+
+
+def _extract_keyword_tokens(text: str, *, max_terms: int = 8) -> List[str]:
+    tokens = re.findall(r"[A-Za-z0-9가-힣]{2,}", str(text or ""))
+    selected: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        key = token.lower()
+        if key in _KEYWORD_STOPWORDS or key in seen:
+            continue
+        seen.add(key)
+        selected.append(token)
+        if len(selected) >= max_terms:
+            break
+    return selected
+
+
+def _extract_anchor_tokens(entity_map: Any, *, max_terms: int = 6) -> List[str]:
+    if not isinstance(entity_map, dict):
+        return []
+    extracted = entity_map.get("extracted")
+    if not isinstance(extracted, list):
+        return []
+    anchors: List[str] = []
+    seen: set[str] = set()
+    for item in extracted:
+        tokens = _extract_keyword_tokens(str(item or ""), max_terms=2)
+        for token in tokens:
+            key = token.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            anchors.append(token)
+            if len(anchors) >= max_terms:
+                return anchors
+    return anchors
+
+
+def _merge_meta_list(*values: Any) -> List[str]:
+    merged: List[str] = []
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            token = str(item or "").strip()
+            if not token or token in merged:
+                continue
+            merged.append(token)
+    return merged
+
+
+def _intent_hint_tokens(qtype: str, intent: str, stance: str) -> List[str]:
+    hints: List[str] = []
+    if qtype == "news" or intent == "official_statement":
+        hints.append("공식입장")
+    if qtype == "verification" or intent in {"fact_check", "verification"}:
+        hints.append("팩트체크")
+    if qtype == "web" or intent == "origin_trace":
+        hints.extend(["원출처", "최초유포"])
+    if stance == "support" and qtype == "verification":
+        hints.append("사실확인")
+    if stance == "skeptic":
+        hints.append("반박")
+    return hints
+
+
+def _build_keyword_query_text(
+    *,
+    text: str,
+    qtype: str,
+    meta: Dict[str, Any],
+    fallback: str,
+    anchor_tokens: List[str] | None = None,
+    max_terms: int = 8,
+) -> tuple[str, List[str], List[str], List[str], List[str]]:
+    mode = _normalize_claim_mode(meta.get("mode"))
+    intent = _normalize_intent(meta.get("intent"), qtype, mode)
+    stance = _normalize_stance(meta.get("stance"))
+    anchor_tokens = anchor_tokens or []
+    raw_tokens = re.findall(r"[A-Za-z0-9가-힣]{2,}", str(text or ""))
+    dropped_tokens: List[str] = []
+    tokens: List[str] = []
+    seen_raw: set[str] = set()
+
+    for token in raw_tokens:
+        key = token.lower()
+        if key in seen_raw:
+            continue
+        seen_raw.add(key)
+        if key in _KEYWORD_STOPWORDS or key in _GENERIC_WEB_TOKENS:
+            dropped_tokens.append(token)
+            continue
+        tokens.append(token)
+
+    if not tokens:
+        tokens = _extract_keyword_tokens(fallback, max_terms=max_terms)
+    tokens.extend(_intent_hint_tokens(qtype, intent, stance))
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(token)
+        if len(deduped) >= max_terms:
+            break
+
+    if not deduped:
+        deduped = _extract_keyword_tokens(fallback or "핵심 주장", max_terms=3) or ["핵심", "주장"]
+
+    anchor_used: List[str] = []
+    deduped_lower = " ".join(deduped).lower()
+    for anchor in anchor_tokens:
+        if anchor.lower() in deduped_lower:
+            anchor_used.append(anchor)
+            break
+    quality_flags: List[str] = ["keyword_rewrite"]
+    if anchor_tokens and not anchor_used:
+        deduped = [anchor_tokens[0], *deduped]
+        deduped = deduped[:max_terms]
+        anchor_used = [anchor_tokens[0]]
+        quality_flags.append("anchor_enforced")
+    if dropped_tokens:
+        quality_flags.append("generic_tokens_dropped")
+
+    return " ".join(deduped), deduped, dropped_tokens, quality_flags, anchor_used
+
+
+def _clean_wiki_query_text(text: str, fallback: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+    cleaned = re.sub(r"^[\"'“”‘’\[\](){}]+|[\"'“”‘’\[\](){}]+$", "", cleaned).strip()
+    if not cleaned:
+        cleaned = re.sub(r"\s+", " ", str(fallback or "").strip())
+    return cleaned or "핵심 주장"
+
+
+def _enforce_single_wiki_variant(
+    variants: List[Dict[str, Any]],
+    *,
+    core_fact: str,
+    claim_text: str,
+    normalized_claims: Any,
+    claim_mode: str,
+    anchor_tokens: List[str] | None = None,
+) -> List[Dict[str, Any]]:
+    fallback_claim_id = _primary_claim_id(normalized_claims) or "C1"
+    fallback_text = core_fact or claim_text or "핵심 주장"
+    anchor_tokens = anchor_tokens or []
+
+    wiki_candidates = [
+        v
+        for v in variants
+        if isinstance(v, dict)
+        and _normalize_query_type(v.get("type", "direct")) == "wiki"
+        and str(v.get("text", "") or "").strip()
+    ]
+    target = wiki_candidates[0] if wiki_candidates else {
+        "type": "wiki",
+        "text": fallback_text,
+        "meta": {"claim_id": fallback_claim_id, "mode": claim_mode},
+    }
+
+    target_meta = _copy_meta(target.get("meta"))
+    target_text = _clean_wiki_query_text(str(target.get("text", "") or ""), fallback_text)
+    quality_flags: List[str] = []
+    anchor_used: List[str] = []
+    if anchor_tokens:
+        target_lower = target_text.lower()
+        for anchor in anchor_tokens:
+            if anchor.lower() in target_lower:
+                anchor_used = [anchor]
+                break
+        if not anchor_used:
+            target_text = f"{anchor_tokens[0]} {target_text}".strip()
+            anchor_used = [anchor_tokens[0]]
+            quality_flags.append("anchor_enforced")
+    standardized = _standardize_variant(
+        "wiki",
+        target_text,
+        target_meta,
+        fallback_claim_id=str(target_meta.get("claim_id") or fallback_claim_id),
+        claim_mode=claim_mode,
+    )
+
+    final_meta = _copy_meta(standardized.get("meta"))
+    final_meta["intent"] = "entity_profile"
+    final_meta["stance"] = "neutral"
+    final_meta["query_strategy"] = "wiki_vector_single"
+    final_meta.setdefault("original_text", str(target.get("text", "") or target_text).strip())
+    final_meta["keyword_tokens"] = _extract_keyword_tokens(target_text, max_terms=12)
+    final_meta["anchor_tokens"] = anchor_used
+    final_meta["dropped_tokens"] = _merge_meta_list(final_meta.get("dropped_tokens"))
+    final_meta["quality_flags"] = _merge_meta_list(final_meta.get("quality_flags"), quality_flags)
+    standardized["meta"] = final_meta
+
+    non_wiki = [
+        variant
+        for variant in variants
+        if isinstance(variant, dict) and _normalize_query_type(variant.get("type", "direct")) != "wiki"
+    ]
+    return [standardized, *non_wiki]
+
+
+def _rewrite_web_variants_to_keywords(
+    variants: List[Dict[str, Any]],
+    *,
+    core_fact: str,
+    claim_mode: str,
+    anchor_tokens: List[str] | None = None,
+) -> List[Dict[str, Any]]:
+    anchor_tokens = anchor_tokens or []
+    rewritten: List[Dict[str, Any]] = []
+    for idx, variant in enumerate(variants, start=1):
+        if not isinstance(variant, dict):
+            continue
+        qtype = _normalize_query_type(variant.get("type", "direct"))
+        text = str(variant.get("text", "") or "").strip()
+        meta = _copy_meta(variant.get("meta"))
+        if qtype in {"news", "verification", "web"}:
+            keyword_text, keyword_tokens, dropped_tokens, quality_flags, anchor_used = _build_keyword_query_text(
+                text=text,
+                qtype=qtype,
+                meta=meta,
+                fallback=core_fact,
+                anchor_tokens=anchor_tokens,
+            )
+            standardized = _standardize_variant(
+                qtype,
+                keyword_text,
+                meta,
+                fallback_claim_id=str(meta.get("claim_id") or f"C{idx}"),
+                claim_mode=claim_mode,
+            )
+            final_meta = _copy_meta(standardized.get("meta"))
+            final_meta["query_strategy"] = "keyword_focus"
+            final_meta["original_text"] = text
+            final_meta["keyword_tokens"] = keyword_tokens
+            final_meta["anchor_tokens"] = anchor_used
+            final_meta["dropped_tokens"] = dropped_tokens
+            final_meta["quality_flags"] = _merge_meta_list(final_meta.get("quality_flags"), quality_flags)
+            standardized["meta"] = final_meta
+            rewritten.append(standardized)
+            continue
+        rewritten.append(
+            _standardize_variant(
+                qtype,
+                text,
+                meta,
+                fallback_claim_id=str(meta.get("claim_id") or f"C{idx}"),
+                claim_mode=claim_mode,
+            )
+        )
+    return rewritten
 
 
 def _standardize_variant(
@@ -976,10 +1266,12 @@ def _finalize_query_variants(
     normalized_claims: Any,
     claim_mode: str,
     claim_text: str,
+    entity_map: Any = None,
 ) -> List[Dict[str, Any]]:
     variants = result.get("query_variants", [])
     core_fact = str(result.get("core_fact") or claim_text).strip() or claim_text
     fallback_claim_id = _primary_claim_id(normalized_claims)
+    anchor_tokens = _extract_anchor_tokens(entity_map)
 
     variants = _augment_with_normalized_claims(variants, normalized_claims, claim_mode)
     variants = _sanitize_claim_refs(variants, normalized_claims, fallback_claim_id, claim_mode)
@@ -991,6 +1283,24 @@ def _finalize_query_variants(
         normalized_claims=normalized_claims,
         claim_mode=claim_mode,
     )
+    variants = _sanitize_claim_refs(variants, normalized_claims, fallback_claim_id, claim_mode)
+    variants = _dedupe_query_variants(variants)
+    if bool(settings.stage2_wiki_vector_single_enabled):
+        variants = _enforce_single_wiki_variant(
+            variants,
+            core_fact=core_fact,
+            claim_text=claim_text,
+            normalized_claims=normalized_claims,
+            claim_mode=claim_mode,
+            anchor_tokens=anchor_tokens,
+        )
+    if bool(settings.stage2_web_keyword_rewrite_enabled):
+        variants = _rewrite_web_variants_to_keywords(
+            variants,
+            core_fact=core_fact,
+            claim_mode=claim_mode,
+            anchor_tokens=anchor_tokens,
+        )
     variants = _sanitize_claim_refs(variants, normalized_claims, fallback_claim_id, claim_mode)
     variants = _dedupe_query_variants(variants)
     return variants
@@ -1014,6 +1324,7 @@ def run(state: dict) -> dict:
         context = state.get("canonical_evidence", {})
         if not isinstance(context, dict):
             context = {}
+        entity_map = state.get("entity_map", {})
         normalize_claims = state.get("normalize_claims")
         claim_mode = _normalize_claim_mode(state.get("claim_mode"))
         risk_markers = state.get("risk_markers") if isinstance(state.get("risk_markers"), list) else []
@@ -1036,6 +1347,7 @@ def run(state: dict) -> dict:
                 normalized_claims=normalize_claims,
                 claim_mode=claim_mode,
                 claim_text=claim_text,
+                entity_map=entity_map,
             )
             state["query_variants"] = result["query_variants"]
             state["keyword_bundles"] = result["keyword_bundles"]
@@ -1112,6 +1424,7 @@ def run(state: dict) -> dict:
             normalized_claims=normalize_claims,
             claim_mode=claim_mode,
             claim_text=claim_text,
+            entity_map=entity_map,
         )
 
         # State 업데이트

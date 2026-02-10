@@ -5,6 +5,7 @@ enum GuideTarget {
   settings,
   inputTypeSelector,
   inputField,
+  inputClearButton,
   verifyStartButton,
   navHistory,
   navVerify,
@@ -39,7 +40,7 @@ class GuideItem {
 }
 
 class TutorialContent {
-  /// HomeInput 한 페이지(상단 설정 + 입력 3 + 하단바 3)
+  /// HomeInput 한 페이지(상단 설정 + 입력 4 + 하단바 3)
   static const List<GuideItem> homeInputGuideItems = [
     GuideItem(
       target: GuideTarget.settings,
@@ -58,6 +59,12 @@ class TutorialContent {
       title: '입력창',
       description: '검증할 URL 또는 문장을 붙여넣거나 입력해요.',
       placement: LabelPlacement.topLeft,
+    ),
+    GuideItem(
+      target: GuideTarget.inputClearButton,
+      title: '입력 초기화',
+      description: 'X 버튼을 누르면 입력창 내용을 한 번에 지울 수 있어요.',
+      placement: LabelPlacement.topRight,
     ),
     GuideItem(
       target: GuideTarget.verifyStartButton,

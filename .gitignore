@@ -35,3 +35,4 @@ storage/
 .vscode/
 .claude/
 .github/
+.legacy/

@@ -18,9 +18,9 @@ _SOURCE_PRIOR = {
     "WIKIPEDIA": 0.72,
     "KNOWLEDGE_BASE": 0.72,
     "KB_DOC": 0.72,
-    "NEWS": 0.64,
-    "WEB_URL": 0.52,
-    "WEB": 0.52,
+    "NEWS": 0.58,
+    "WEB_URL": 0.44,
+    "WEB": 0.44,
 }
 _INTENT_BONUS = {
     "official_statement": 0.10,
@@ -181,9 +181,9 @@ def _score_news_web_candidate(
         rumor_penalty = 0.12
 
     relevance_base = (
-        source_prior
-        + (0.26 * lexical_overlap)
-        + (0.24 * title_overlap)
+        (0.44 * source_prior)
+        + (0.33 * lexical_overlap)
+        + (0.31 * title_overlap)
         + intent_bonus
         + freshness_bonus
         - rumor_penalty
@@ -193,16 +193,30 @@ def _score_news_web_candidate(
     multiplier = 1.15 if rumor_mode else 1.0
     credibility_adjustment = weight * (credibility_score - 0.5) * multiplier
 
-    score = max(0.0, min(relevance_base + credibility_adjustment, 1.0))
+    raw_score = max(0.0, min(relevance_base + credibility_adjustment, 1.0))
+    overlap_max = max(title_overlap, lexical_overlap)
+    low_overlap_threshold = max(0.0, min(1.0, float(settings.stage4_low_overlap_threshold)))
+    low_overlap = overlap_max < low_overlap_threshold
+    rumor_cap = max(0.0, min(1.0, float(settings.stage5_threshold_rumor)))
+    high_score_low_overlap = low_overlap and raw_score >= rumor_cap
+
+    score = raw_score
+    if high_score_low_overlap:
+        score = min(score, rumor_cap)
 
     return round(score, 4), {
         "source_prior": round(source_prior, 4),
         "lexical_overlap": round(lexical_overlap, 4),
         "title_overlap": round(title_overlap, 4),
+        "overlap_max": round(overlap_max, 4),
+        "low_overlap_threshold": round(low_overlap_threshold, 4),
         "intent_bonus": round(intent_bonus, 4),
         "freshness_bonus": round(freshness_bonus, 4),
         "rumor_penalty": round(rumor_penalty, 4),
         "relevance_base": round(relevance_base, 4),
+        "raw_score": round(raw_score, 4),
+        "overlap_cap_applied": bool(high_score_low_overlap),
+        "high_score_low_overlap": bool(high_score_low_overlap),
         "source_tier": source_tier,
         "source_trust_score": round(source_trust_score, 4),
         "html_signal_score": round(html_signal_score, 4),
@@ -226,6 +240,7 @@ def run(state: dict) -> dict:
     keywords = extract_keywords(claim_text)
 
     scored_evidence: list[dict[str, Any]] = []
+    high_score_low_overlap_count = 0
 
     logger.info(
         "Stage 4 Start. Scoring %d candidates against claim='%s' mode=%s",
@@ -246,6 +261,8 @@ def run(state: dict) -> dict:
             score, breakdown = _score_wiki_candidate(candidate, metadata, keywords, rumor_mode)
         else:
             score, breakdown = _score_news_web_candidate(candidate, metadata, keywords, rumor_mode)
+            if bool(breakdown.get("high_score_low_overlap")):
+                high_score_low_overlap_count += 1
 
         scored_item = dict(candidate)
         scored_metadata = dict(metadata)
@@ -256,7 +273,12 @@ def run(state: dict) -> dict:
 
     scored_evidence.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
 
-    threshold = settings.stage5_threshold_rumor if rumor_mode else settings.stage5_threshold_standard
+    if claim_mode == "fact":
+        threshold = settings.stage5_threshold_standard
+    elif claim_mode == "mixed":
+        threshold = settings.stage5_threshold_mixed
+    else:
+        threshold = settings.stage5_threshold_rumor
     threshold_pass = sum(1 for item in scored_evidence if float(item.get("score") or 0.0) >= threshold)
     pass_rate = threshold_pass / len(scored_evidence) if scored_evidence else 0.0
 
@@ -266,6 +288,7 @@ def run(state: dict) -> dict:
         "threshold_pass_count": threshold_pass,
         "threshold_pass_rate": round(pass_rate, 4),
         "total_scored": len(scored_evidence),
+        "high_score_low_overlap_count": high_score_low_overlap_count,
     }
 
     logger.info("Stage 4 Complete. pass_rate=%.3f (%d/%d)", pass_rate, threshold_pass, len(scored_evidence))

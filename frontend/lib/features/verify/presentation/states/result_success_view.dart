@@ -12,20 +12,25 @@ class ResultSuccessView extends GetView<ResultController> {
 
   @override
   Widget build(BuildContext context) {
-    // ✅ home_input과 통일된 배경색
-    const bg = Color(0xFFF7F7F7);
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final bg = isDark
+        ? theme.colorScheme.surfaceVariant
+        : const Color(0xFFF7F7F7);
 
     return Scaffold(
       backgroundColor: bg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
+        backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
+        foregroundColor: isDark ? theme.colorScheme.onSurface : Colors.black,
         elevation: 0,
-        surfaceTintColor: Colors.white,
+        surfaceTintColor: isDark ? theme.colorScheme.surface : Colors.white,
         toolbarHeight: 56,
         shape: Border(
           bottom: BorderSide(
-            color: Colors.black.withOpacity( 0.06),
+            color: isDark
+                ? theme.colorScheme.outlineVariant.withOpacity(0.7)
+                : Colors.black.withOpacity( 0.06),
             width: 1,
           ),
         ),
@@ -65,9 +70,17 @@ class ResultSuccessView extends GetView<ResultController> {
                         ? controller.successHeadline.value
                         : _defaultHeadline(verdict);
 
-                    final reason = controller.successReason.value.isNotEmpty
+                    final rawReason = controller.successReason.value.isNotEmpty
                         ? controller.successReason.value
                         : '근거를 바탕으로 결과를 정리했어요.\n아래 근거를 직접 확인해 주세요.';
+                    // Remove (ev_...) citations and trim
+                    final reason = rawReason
+                        .replaceAll(RegExp(r'\s*\(?ev_[a-zA-Z0-9]+\)?'), '')
+                        .trim();
+                    final badgeText = controller.verdictBadgeText.value.isNotEmpty
+                        ? controller.verdictBadgeText.value
+                        : _defaultBadgeLabel(verdict);
+                    final riskFlags = controller.resultRiskFlags.toList(growable: false);
 
                     final cards = controller.evidenceCards;
 
@@ -85,7 +98,12 @@ class ResultSuccessView extends GetView<ResultController> {
                         // ─────────────────────────────
                         // 2) Verdict Pill + Headline
                         // ─────────────────────────────
-                        Center(child: _VerdictPill(verdict: verdict)),
+                        Center(
+                          child: _VerdictPill(
+                            verdict: verdict,
+                            label: badgeText,
+                          ),
+                        ),
                         const SizedBox(height: 10),
 
                         Text(
@@ -148,6 +166,43 @@ class ResultSuccessView extends GetView<ResultController> {
                         const SizedBox(height: 12),
 
                         // ─────────────────────────────
+                        // (New) 검증 대상 (Original Claim)
+                        // ─────────────────────────────
+                        _Card(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.format_quote_rounded,
+                                      size: 18, color: _toneColor(verdict)),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    '핵심 검증 포인트',
+                                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                          fontWeight: FontWeight.w900,
+                                          color: const Color(0xFF111827),
+                                        ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 10),
+                              Text(
+                                controller.extractedClaim.value.isNotEmpty
+                                    ? controller.extractedClaim.value
+                                    : controller.userQuery.value,
+                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                      color: const Color(0xFF374151),
+                                      height: 1.48,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+
+                        // ─────────────────────────────
                         // 4) 판단 이유 카드
                         // ─────────────────────────────
                         _Card(
@@ -159,7 +214,7 @@ class ResultSuccessView extends GetView<ResultController> {
                                       size: 18, color: _toneColor(verdict)),
                                   const SizedBox(width: 8),
                                   Text(
-                                    '요약',
+                                    '상세 분석 결과',
                                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
                                           fontWeight: FontWeight.w900,
                                           color: const Color(0xFF111827),
@@ -170,7 +225,7 @@ class ResultSuccessView extends GetView<ResultController> {
                               const SizedBox(height: 10),
                               Text(
                                 reason,
-                                textAlign: TextAlign.center,
+                                textAlign: TextAlign.justify,
                                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                                       color: const Color(0xFF374151),
                                       height: 1.48,
@@ -181,6 +236,42 @@ class ResultSuccessView extends GetView<ResultController> {
                           ),
                         ),
                         const SizedBox(height: 16),
+
+                        if (riskFlags.isNotEmpty) ...[
+                          _Card(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(
+                                      Icons.warning_amber_rounded,
+                                      size: 18,
+                                      color: _toneColor(verdict),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      '주의 신호',
+                                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                            fontWeight: FontWeight.w900,
+                                            color: const Color(0xFF111827),
+                                          ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: riskFlags
+                                      .map((flag) => _RiskFlagChip(flag: flag))
+                                      .toList(growable: false),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
 
                         // ─────────────────────────────
                         // 5) 근거 리스트
@@ -235,7 +326,7 @@ class ResultSuccessView extends GetView<ResultController> {
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: isDark ? theme.colorScheme.surface : Colors.white,
           boxShadow: [
             BoxShadow(
               color: Colors.black.withOpacity( 0.06),
@@ -248,18 +339,26 @@ class ResultSuccessView extends GetView<ResultController> {
           data: NavigationBarThemeData(
             indicatorColor: Colors.transparent,
             overlayColor: MaterialStateProperty.all(Colors.transparent),
-            backgroundColor: Colors.white,
+            backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
             iconTheme: MaterialStateProperty.resolveWith<IconThemeData>((states) {
               final selected = states.contains(MaterialState.selected);
               return IconThemeData(
                 size: 32,
-                color: selected ? Colors.black : const Color(0xff7a7a7a),
+                color: selected
+                    ? (isDark ? theme.colorScheme.onSurface : Colors.black)
+                    : (isDark
+                          ? theme.colorScheme.onSurfaceVariant
+                          : const Color(0xff7a7a7a)),
               );
             }),
             labelTextStyle: MaterialStateProperty.resolveWith<TextStyle>((states) {
               final selected = states.contains(MaterialState.selected);
               return TextStyle(
-                color: selected ? Colors.black : const Color(0xff7a7a7a),
+                color: selected
+                    ? (isDark ? theme.colorScheme.onSurface : Colors.black)
+                    : (isDark
+                          ? theme.colorScheme.onSurfaceVariant
+                          : const Color(0xff7a7a7a)),
                 fontSize: 12,
               );
             }),
@@ -301,6 +400,19 @@ class ResultSuccessView extends GetView<ResultController> {
         return '일부만 사실이에요';
       case VerdictType.unverified:
         return '판단하기 어려워요';
+    }
+  }
+
+  String _defaultBadgeLabel(VerdictType v) {
+    switch (v) {
+      case VerdictType.trueClaim:
+        return 'TRUE';
+      case VerdictType.falseClaim:
+        return 'FALSE';
+      case VerdictType.mixed:
+        return 'MIXED';
+      case VerdictType.unverified:
+        return 'UNVERIFIED';
     }
   }
 
@@ -359,7 +471,8 @@ class _Card extends StatelessWidget {
 
 class _VerdictPill extends StatelessWidget {
   final VerdictType verdict;
-  const _VerdictPill({required this.verdict});
+  final String label;
+  const _VerdictPill({required this.verdict, required this.label});
 
   @override
   Widget build(BuildContext context) {
@@ -373,7 +486,7 @@ class _VerdictPill extends StatelessWidget {
         border: Border.all(color: s.border),
       ),
       child: Text(
-        s.label,
+        label,
         style: TextStyle(
           color: s.fg,
           fontWeight: FontWeight.w900,
@@ -388,28 +501,24 @@ class _VerdictPill extends StatelessWidget {
     switch (v) {
       case VerdictType.trueClaim:
         return const _PillStyle(
-          label: 'TRUE',
           bg: Color(0xFFE8F9EA),
           border: Color(0xFFB8F0C0),
           fg: Color(0xFF34C759),
         );
       case VerdictType.falseClaim:
         return const _PillStyle(
-          label: 'FALSE',
           bg: Color(0xFFFFEAEA),
           border: Color(0xFFFFC9C9),
           fg: Color(0xFFEF4444),
         );
       case VerdictType.mixed:
         return const _PillStyle(
-          label: 'MIXED',
           bg: Color(0xFFFFF4E6),
           border: Color(0xFFFFD9A6),
           fg: Color(0xFFF59E0B),
         );
       case VerdictType.unverified:
         return const _PillStyle(
-          label: 'UNVERIFIED',
           bg: Color(0xFFF2F4F7),
           border: Color(0xFFE4E7EC),
           fg: Color(0xFF667085),
@@ -419,12 +528,10 @@ class _VerdictPill extends StatelessWidget {
 }
 
 class _PillStyle {
-  final String label;
   final Color bg;
   final Color border;
   final Color fg;
   const _PillStyle({
-    required this.label,
     required this.bg,
     required this.border,
     required this.fg,
@@ -475,6 +582,42 @@ class _CountChip extends StatelessWidget {
           color: Color(0xFF3478F6),
           fontWeight: FontWeight.w900,
           fontSize: 12,
+        ),
+      ),
+    );
+  }
+}
+
+class _RiskFlagChip extends StatelessWidget {
+  final String flag;
+  const _RiskFlagChip({required this.flag});
+
+  String _translateFlag(String f) {
+    switch (f.toUpperCase()) {
+      case 'LOW_EVIDENCE': return '근거 부족';
+      case 'NO_SKEPTIC_EVIDENCE': return '반박 근거 없음';
+      case 'UNBALANCED_STANCE_EVIDENCE': return '근거 편향됨';
+      case 'NO_VERIFIED_CITATIONS': return '인용 없음';
+      case 'LOW_CONFIDENCE': return '신뢰도 낮음';
+      default: return f;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF4E6),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0xFFFFD9A6)),
+      ),
+      child: Text(
+        _translateFlag(flag),
+        style: const TextStyle(
+          color: Color(0xFFB45309),
+          fontWeight: FontWeight.w800,
+          fontSize: 11,
         ),
       ),
     );

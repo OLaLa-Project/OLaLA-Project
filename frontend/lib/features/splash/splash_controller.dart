@@ -45,12 +45,12 @@ class SplashController extends GetxController with GetSingleTickerProviderStateM
   }
 
   Future<void> _navigateToNextScreen() async {
-    final isFirstLaunch = await LocalStorage.isFirstLaunch();
+    final isOnboardingCompleted = await LocalStorage.isOnboardingCompleted();
 
-    if (isFirstLaunch) {
-      Get.offAllNamed(AppRoutes.onboarding);
-    } else {
+    if (isOnboardingCompleted) {
       Get.offAllNamed(AppRoutes.shell);
+    } else {
+      Get.offAllNamed(AppRoutes.onboarding);
     }
   }
 

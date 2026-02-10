@@ -2,15 +2,19 @@ import uuid
 import json
 import logging
 from collections.abc import AsyncGenerator
-from typing import Any, Literal, cast
-from datetime import datetime, timezone
+from typing import Any, cast
 
 from app.core.async_utils import run_async_in_sync
-from app.core.schemas import Citation, ModelInfo, TruthCheckRequest, TruthCheckResponse
+from app.core.schemas import TruthCheckRequest, TruthCheckResponse
 from app.core.observability import record_stage_result
 from app.graph.graph import STAGE_OUTPUT_KEYS, build_langgraph, run_stage_sequence
 from app.graph.checkpoint import resolve_checkpoint_thread_id
 from app.graph.state import GraphState
+from app.services.response_mapper import (
+    build_complete_event_data,
+    build_truth_response,
+    response_contract_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,92 +50,14 @@ def _resolve_checkpoint_context(req: TruthCheckRequest, trace_id: str) -> tuple[
     return resolve_checkpoint_thread_id(requested_thread_id, trace_id)
 
 
-def _build_response(out: dict[str, Any], trace_id: str) -> TruthCheckResponse:
-    """내부 GraphState를 정제된 TruthCheckResponse(Public API용)로 변환."""
-    def _map_source_type(raw: str) -> Literal["KB_DOC", "WEB_URL", "NEWS", "WIKIPEDIA"]:
-        raw = (raw or "").upper()
-        if raw in {"NEWS"}: return "NEWS"
-        if raw in {"WIKIPEDIA", "KB_DOC", "KNOWLEDGE_BASE"}: return "WIKIPEDIA"
-        return "WEB_URL"
-
-    final_verdict = out.get("final_verdict") if isinstance(out.get("final_verdict"), dict) else None
-    
-    # 1. 기본 정보 설정
-    if final_verdict:
-        label = final_verdict.get("label", "UNVERIFIED")
-        confidence = final_verdict.get("confidence", 0.0)
-        summary = final_verdict.get("summary", "")
-        rationale = final_verdict.get("rationale", [])
-        counter_evidence = final_verdict.get("counter_evidence", [])
-        limitations = final_verdict.get("limitations", [])
-        recommended_next_steps = final_verdict.get("recommended_next_steps", [])
-        risk_flags = final_verdict.get("risk_flags", out.get("risk_flags", []))
-        model_meta = final_verdict.get("model_info", {"provider": "local", "model": "slm", "version": "v1.0"})
-        latency_ms = final_verdict.get("latency_ms", 0)
-        cost_usd = final_verdict.get("cost_usd", 0.0)
-        created_at = final_verdict.get("created_at", datetime.now(timezone.utc).isoformat())
-        citation_source = final_verdict.get("citations", [])
-    else:
-        label = "UNVERIFIED"
-        confidence = 0.0
-        summary = "충분한 증거를 찾지 못했습니다."
-        rationale = []
-        counter_evidence = []
-        limitations = []
-        recommended_next_steps = []
-        risk_flags = out.get("risk_flags", [])
-        model_meta = {"provider": "local", "model": "pipeline", "version": "v0.1"}
-        latency_ms = 0
-        cost_usd = 0.0
-        created_at = datetime.now(timezone.utc).isoformat()
-        citation_source = out.get("citations", [])
-
-    # 2. 인용구 정규화
-    citations = [
-        Citation(
-            source_type=_map_source_type(c.get("source_type")),
-            title=c.get("title", ""),
-            url=c.get("url", ""),
-            quote=(c.get("quote") or c.get("snippet") or c.get("content") or "")[:500],
-            relevance=c.get("relevance", c.get("score", 0.0)),
-        )
-        for c in citation_source
-    ]
-
-    # 3. 데이터 최소화 (Flutter 클라이언트를 위해 디버그 정보 선택적 포함)
-    include_full = out.get("include_full_outputs", False)
-    
-    # Deep cleanup of canonical_evidence if not debugging
-    if not include_full and "canonical_evidence" in out:
-        ce = out["canonical_evidence"]
-        if isinstance(ce, dict):
-            ce.pop("fetched_content", None)
-    
-    return TruthCheckResponse(
-        analysis_id=trace_id,
-        label=label,
-        confidence=confidence,
-        summary=summary,
-        rationale=rationale,
-        citations=citations,
-        counter_evidence=counter_evidence,
-        limitations=limitations,
-        recommended_next_steps=recommended_next_steps,
-        risk_flags=risk_flags,
-        stage_logs=out.get("stage_logs", []) if include_full else [],
-        stage_outputs=out.get("stage_outputs", {}) if include_full else {},
-        stage_full_outputs=out.get("stage_full_outputs", {}) if include_full else {},
-        model_info=ModelInfo(
-            provider=model_meta.get("provider", "local"),
-            model=model_meta.get("model", "slm"),
-            version=model_meta.get("version", "v1.0"),
-        ),
-        latency_ms=latency_ms,
-        cost_usd=cost_usd,
-        created_at=created_at,
-        checkpoint_thread_id=out.get("checkpoint_thread_id"),
-        checkpoint_resumed=out.get("checkpoint_resumed"),
-        checkpoint_expired=out.get("checkpoint_expired"),
+def _log_response_contract(trace_id: str, response: TruthCheckResponse) -> None:
+    metrics = response_contract_metrics(response)
+    logger.info(
+        "[%s] response_contract schema_version=%s fields_populated_count=%s missing_critical_fields=%s",
+        trace_id,
+        metrics["schema_version"],
+        metrics["fields_populated_count"],
+        metrics["missing_critical_fields"],
     )
 
 def _build_error_payload(error_msg: str, stage: str = "unknown") -> str:
@@ -180,10 +106,22 @@ def run_pipeline(req: TruthCheckRequest) -> TruthCheckResponse:
         if full_run_requested:
             graph_out = _invoke_langgraph_sync(state)
             if graph_out is not None:
-                return _build_response(_fill_checkpoint_meta(graph_out, state), state["trace_id"])
+                response = build_truth_response(
+                    _fill_checkpoint_meta(graph_out, state),
+                    state["trace_id"],
+                    include_debug=bool(req.include_full_outputs),
+                )
+                _log_response_contract(state["trace_id"], response)
+                return response
 
         out = run_stage_sequence(state, req.start_stage, req.end_stage)
-        return _build_response(_fill_checkpoint_meta(cast(dict[str, Any], out), state), state["trace_id"])
+        response = build_truth_response(
+            _fill_checkpoint_meta(cast(dict[str, Any], out), state),
+            state["trace_id"],
+            include_debug=bool(req.include_full_outputs),
+        )
+        _log_response_contract(state["trace_id"], response)
+        return response
     except Exception as e:
         logger.error(f"Sync pipeline failed: {e}")
         record_stage_result(
@@ -192,7 +130,7 @@ def run_pipeline(req: TruthCheckRequest) -> TruthCheckResponse:
             duration_ms=None,
             ok=False,
         )
-        return _build_response(
+        response = build_truth_response(
             {
                 "risk_flags": ["PIPELINE_CRASH"],
                 "final_verdict": {"summary": f"오류 발생: {str(e)}"},
@@ -201,7 +139,10 @@ def run_pipeline(req: TruthCheckRequest) -> TruthCheckResponse:
                 "checkpoint_expired": state.get("checkpoint_expired"),
             },
             state["trace_id"],
+            include_debug=bool(req.include_full_outputs),
         )
+        _log_response_contract(state["trace_id"], response)
+        return response
 
 async def run_pipeline_stream(req: TruthCheckRequest) -> AsyncGenerator[str, None]:
     """비동기 스트리밍 파이프라인 실행 (Flutter SSE 대응)."""
@@ -317,8 +258,13 @@ async def run_pipeline_stream(req: TruthCheckRequest) -> AsyncGenerator[str, Non
         }, default=pydantic_encoder) + "\n"
 
     # 최종 결과 전송
-    final_response = _build_response(cast(dict[str, Any], final_state), trace_id)
+    final_response = build_truth_response(
+        cast(dict[str, Any], final_state),
+        trace_id,
+        include_debug=bool(req.include_full_outputs),
+    )
+    _log_response_contract(trace_id, final_response)
     yield json.dumps({
         "event": "complete",
-        "data": final_response.model_dump()
+        "data": build_complete_event_data(final_response, trace_id),
     }, default=pydantic_encoder) + "\n"

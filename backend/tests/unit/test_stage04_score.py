@@ -1,3 +1,4 @@
+import app.stages.stage04_score.node as score_node
 from app.stages.stage04_score.node import run
 
 
@@ -79,3 +80,34 @@ def test_stage04_prefers_higher_credibility_when_relevance_similar():
     assert len(scored) == 2
     assert scored[0]["metadata"]["credibility_score"] > scored[1]["metadata"]["credibility_score"]
     assert scored[0]["score"] > scored[1]["score"]
+
+
+def test_stage04_caps_high_score_when_overlap_is_low(monkeypatch):
+    monkeypatch.setitem(score_node._SOURCE_PRIOR, "WEB_URL", 1.2)
+    monkeypatch.setattr(score_node.settings, "stage4_low_overlap_threshold", 0.4)
+    monkeypatch.setattr(score_node.settings, "stage5_threshold_rumor", 0.78)
+
+    state = {
+        "claim_text": "서울 매입임대 아파트",
+        "claim_mode": "rumor",
+        "evidence_candidates": [
+            {
+                "source_type": "WEB_URL",
+                "title": "매입임대 정책 발표",
+                "content": "정책 발표와 관련 없는 일반 브리핑 요약",
+                "metadata": {
+                    "intent": "official_statement",
+                    "credibility_score": 1.0,
+                    "source_trust_score": 1.0,
+                    "html_signal_score": 1.0,
+                },
+            }
+        ],
+    }
+
+    output = run(state)
+    scored = output["scored_evidence"]
+    assert len(scored) == 1
+    assert scored[0]["score"] <= 0.78
+    assert scored[0]["metadata"]["score_breakdown"]["overlap_cap_applied"] is True
+    assert output["score_diagnostics"]["high_score_low_overlap_count"] == 1

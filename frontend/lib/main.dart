@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 import 'app/app.dart';
 import 'shared/storage/local_storage.dart';
+import 'package:device_preview/device_preview.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ✅ 강제 초기화 (테스트용 - 한 번 실행 후 주석 처리하세요!)
-  await LocalStorage.clearAll();
+  final isDarkMode = await LocalStorage.getDarkMode();
+  final themeMode = (isDarkMode ?? false) ? ThemeMode.dark : ThemeMode.light;
 
-  runApp(const OLaLAApp());
+  runApp(
+    DevicePreview(
+      enabled: true, // Linux Desktop에서 항상 모바일 프레임 보이게 설정
+      builder: (context) => OLaLAApp(initialThemeMode: themeMode),
+    ),
+  );
 }

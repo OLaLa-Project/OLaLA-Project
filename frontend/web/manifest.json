@@ -1,11 +1,11 @@
 {
-    "name": "olala_frontend",
-    "short_name": "olala_frontend",
+    "name": "오늘의 이슈",
+    "short_name": "오늘의 이슈",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#121212",
+    "theme_color": "#121212",
+    "description": "OLaLA - 오늘의 이슈",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

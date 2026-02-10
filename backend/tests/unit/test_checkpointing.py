@@ -110,6 +110,8 @@ async def test_run_pipeline_stream_passes_checkpoint_thread_id(monkeypatch: pyte
     assert complete_event["event"] == "complete"
     assert complete_event["data"]["checkpoint_thread_id"] == "resume-thread-1"
     assert complete_event["data"]["checkpoint_resumed"] is True
+    assert complete_event["data"]["result"]["checkpoint_thread_id"] == "resume-thread-1"
+    assert complete_event["data"]["result"]["schema_version"] == "v2"
 
 
 def test_run_pipeline_uses_langgraph_in_full_mode(monkeypatch: pytest.MonkeyPatch):

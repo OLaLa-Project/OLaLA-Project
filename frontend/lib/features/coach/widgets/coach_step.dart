@@ -64,14 +64,18 @@ class _GuideCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isLast = step == totalSteps;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? theme.colorScheme.surface : Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: Color(0xFFF7F7F7).withOpacity(0.20),
+          color: isDark
+              ? theme.colorScheme.outlineVariant.withOpacity(0.7)
+              : const Color(0xFFF7F7F7).withOpacity(0.20),
           width: 1,
         ),
       ),
@@ -85,7 +89,9 @@ class _GuideCard extends StatelessWidget {
                 width: 28,
                 height: 28,
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: isDark
+                      ? theme.colorScheme.surfaceContainerHighest
+                      : Colors.white,
                   shape: BoxShape.circle,
                   border: Border.all(
                     color: const Color(0xFF3478F6).withOpacity(0.3),
@@ -108,8 +114,10 @@ class _GuideCard extends StatelessWidget {
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(
-                    color: Color(0xFF202124),
+                  style: TextStyle(
+                    color: isDark
+                        ? theme.colorScheme.onSurface
+                        : const Color(0xFF202124),
                     fontSize: 16,
                     fontWeight: FontWeight.w900,
                     letterSpacing: -0.2,
@@ -121,7 +129,9 @@ class _GuideCard extends StatelessWidget {
               Text(
                 '$step/$totalSteps',
                 style: TextStyle(
-                  color: Color(0xFF2E3134),
+                  color: isDark
+                      ? theme.colorScheme.onSurfaceVariant
+                      : const Color(0xFF2E3134),
                   fontSize: 12,
                   fontWeight: FontWeight.w900,
                 ),
@@ -134,7 +144,9 @@ class _GuideCard extends StatelessWidget {
             child: Text(
               body,
               style: TextStyle(
-                color: Color(0xFF3C4043),
+                color: isDark
+                    ? theme.colorScheme.onSurfaceVariant
+                    : const Color(0xFF3C4043),
                 fontSize: 13,
                 fontWeight: FontWeight.w700,
                 height: 1.35,
@@ -187,13 +199,15 @@ class _PrimaryButton extends StatelessWidget {
   //다음 버튼
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(_radius),
         border: Border.all(color: const Color(0xFF2F6FE4).withOpacity(0.3)),
       ),
       child: Material(
-        color: Color(0xFF3478F6).withOpacity(0.18),
+        color: const Color(0xFF3478F6).withOpacity(isDark ? 0.28 : 0.18),
         borderRadius: BorderRadius.circular(_radius),
         child: InkWell(
           onTap: onTap,
@@ -213,13 +227,15 @@ class _PrimaryButtonText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final _PrimaryButton parent = context
         .findAncestorWidgetOfExactType<_PrimaryButton>()!;
     return Text(
       parent.text,
       textAlign: TextAlign.center,
-      style: const TextStyle(
-        color: Color(0xFF202124),
+      style: TextStyle(
+        color: isDark ? theme.colorScheme.onSurface : const Color(0xFF202124),
         fontSize: 14,
         fontWeight: FontWeight.w900,
         letterSpacing: -0.2,
@@ -240,13 +256,22 @@ class _SecondaryButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(_radius),
-        border: Border.all(color: const Color(0xFFE0E0E0).withOpacity(0.06)),
+        border: Border.all(
+          color: isDark
+              ? theme.colorScheme.outlineVariant.withOpacity(0.7)
+              : const Color(0xFFE0E0E0).withOpacity(0.06),
+        ),
       ),
       child: Material(
-        color: Color(0xFFEDEDED),
+        color: isDark
+            ? theme.colorScheme.surfaceContainerHighest
+            : const Color(0xFFEDEDED),
         borderRadius: BorderRadius.circular(_radius),
         child: InkWell(
           onTap: onTap,
@@ -256,8 +281,10 @@ class _SecondaryButton extends StatelessWidget {
             child: Center(
               child: Text(
                 text,
-                style: const TextStyle(
-                  color: Color(0xFF202124),
+                style: TextStyle(
+                  color: isDark
+                      ? theme.colorScheme.onSurface
+                      : const Color(0xFF202124),
                   fontSize: 14,
                   fontWeight: FontWeight.w800,
                   letterSpacing: -0.1,
@@ -280,16 +307,19 @@ class _FinishButton extends StatelessWidget {
   static const double _height = 48;
   static const double _radius = 24;
 
-//검증 시작하기 버튼
+  //검증 시작하기 버튼
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(_radius),
         border: Border.all(color: const Color(0xFF2F6FE4).withOpacity(0.40)),
       ),
       child: Material(
-        color: Color(0xFF3478F6).withOpacity(0.18),
+        color: const Color(0xFF3478F6).withOpacity(isDark ? 0.28 : 0.18),
         borderRadius: BorderRadius.circular(_radius),
         child: InkWell(
           onTap: onTap,
@@ -300,8 +330,10 @@ class _FinishButton extends StatelessWidget {
               child: Text(
                 text,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Color(0xFF202124),
+                style: TextStyle(
+                  color: isDark
+                      ? theme.colorScheme.onSurface
+                      : const Color(0xFF202124),
                   fontSize: 14,
                   fontWeight: FontWeight.w900,
                   letterSpacing: -0.2,

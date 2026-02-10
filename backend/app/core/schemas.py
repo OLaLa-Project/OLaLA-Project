@@ -56,5 +56,15 @@ class TruthCheckResponse(BaseModel):
     checkpoint_thread_id: Optional[str] = None
     checkpoint_resumed: Optional[bool] = None
     checkpoint_expired: Optional[bool] = None
+    schema_version: str = "v2"
+    headline: Optional[str] = None
+    explanation: Optional[str] = None
+    verdict_korean: Optional[str] = None
+    confidence_percent: Optional[int] = None
+    evaluation: Optional[dict] = None
+    evidence_summary: List[dict] = Field(default_factory=list)
+    user_result: Optional[dict] = None
+    judge_retrieval: List[dict] = Field(default_factory=list)
+    stage09_diagnostics: Optional[dict] = None
 
     model_config = {"protected_namespaces": ()}

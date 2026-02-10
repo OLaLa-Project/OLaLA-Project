@@ -202,15 +202,37 @@ class WikiRepository:
         """
         Get page candidates solely by vector similarity.
         """
+        limit = max(1, int(limit))
+        # Keep ANN preselection small so HNSW can answer quickly on large chunk tables.
+        ann_limit = max(limit * 64, 256)
         sql = text("""
-            SELECT p.page_id, p.title
-            FROM public.wiki_chunks c
-            JOIN public.wiki_pages p ON p.page_id = c.page_id
-            GROUP BY p.page_id, p.title
-            ORDER BY MIN(c.embedding <=> (:qvec)::vector) ASC
-            LIMIT :limit
+            WITH nearest_chunks AS (
+                SELECT
+                    c.page_id,
+                    (c.embedding <=> (:qvec)::vector) AS dist
+                FROM public.wiki_chunks c
+                WHERE c.embedding IS NOT NULL
+                ORDER BY c.embedding <=> (:qvec)::vector
+                LIMIT :ann_limit
+            ),
+            best_pages AS (
+                SELECT
+                    nc.page_id,
+                    MIN(nc.dist) AS best_dist
+                FROM nearest_chunks nc
+                GROUP BY nc.page_id
+                ORDER BY best_dist ASC NULLS LAST
+                LIMIT :limit
+            )
+            SELECT bp.page_id, p.title
+            FROM best_pages bp
+            JOIN public.wiki_pages p ON p.page_id = bp.page_id
+            ORDER BY bp.best_dist ASC NULLS LAST, bp.page_id ASC
         """)
-        rows = self.db.execute(sql, {"qvec": qvec_literal, "limit": limit}).all()
+        rows = self.db.execute(
+            sql,
+            {"qvec": qvec_literal, "limit": limit, "ann_limit": ann_limit},
+        ).all()
         return [(int(r[0]), str(r[1])) for r in rows]
 
     def vector_search(

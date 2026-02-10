@@ -123,7 +123,9 @@ class GraphState(TypedDict, total=False):
     search_queries: list[SearchQuery]
 
     wiki_candidates: list[dict[str, Any]]
+    stage03_wiki_diagnostics: dict[str, Any]
     web_candidates: list[dict[str, Any]]
+    stage03_web_diagnostics: dict[str, Any]
     stage03_merge_stats: dict[str, Any]
     evidence_candidates: list[dict[str, Any]]
     scored_evidence: list[dict[str, Any]]

@@ -10,9 +10,10 @@ class ResultLoadingView extends GetView<ResultController> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
-    // ✅ 첨부 이미지와 유사한 블루 배경 (프로젝트 ColorToken 있으면 교체)
-    const bg = Color(0xFF5A88FF);
+    // ✅ 다크모드: 블랙 배경
+    final bg = isDark ? const Color(0xFF000000) : const Color(0xFF5A88FF);
 
     return Scaffold(
       backgroundColor: bg,

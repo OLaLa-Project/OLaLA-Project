@@ -219,10 +219,53 @@ def _merge_candidates(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
+def _compose_balanced_selection(
+    support_selection: list[dict[str, Any]],
+    skeptic_selection: list[dict[str, Any]],
+    *,
+    fallback_selection: list[dict[str, Any]],
+    target_k: int,
+) -> list[dict[str, Any]]:
+    ordered: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    support_ranked = sorted(support_selection, key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    skeptic_ranked = sorted(skeptic_selection, key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    support_idx = 0
+    skeptic_idx = 0
+
+    while len(ordered) < target_k and (support_idx < len(support_ranked) or skeptic_idx < len(skeptic_ranked)):
+        if support_idx < len(support_ranked):
+            candidate = support_ranked[support_idx]
+            support_idx += 1
+            if id(candidate) not in seen:
+                seen.add(id(candidate))
+                ordered.append(candidate)
+                if len(ordered) >= target_k:
+                    break
+        if skeptic_idx < len(skeptic_ranked):
+            candidate = skeptic_ranked[skeptic_idx]
+            skeptic_idx += 1
+            if id(candidate) not in seen:
+                seen.add(id(candidate))
+                ordered.append(candidate)
+
+    for candidate in sorted(fallback_selection, key=lambda item: float(item.get("score") or 0.0), reverse=True):
+        if len(ordered) >= target_k:
+            break
+        if id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        ordered.append(candidate)
+
+    return ordered[:target_k]
+
+
 def _derive_risk_flags(
     base_flags: list[str],
     *,
     selected: list[dict[str, Any]],
+    support_selection: list[dict[str, Any]],
+    skeptic_selection: list[dict[str, Any]],
     thresholded_count: int,
     target_k: int,
     rumor_mode: bool,
@@ -240,12 +283,114 @@ def _derive_risk_flags(
         has_required_intent = any(_candidate_intent(item) in _RUMOR_REQUIRED_INTENTS for item in selected)
         if not has_required_intent and "RUMOR_UNCONFIRMED" not in flags:
             flags.append("RUMOR_UNCONFIRMED")
+        if not skeptic_selection and "NO_SKEPTIC_EVIDENCE" not in flags:
+            flags.append("NO_SKEPTIC_EVIDENCE")
+        support_count = len(support_selection)
+        skeptic_count = len(skeptic_selection)
+        if (
+            support_count == 0
+            or skeptic_count == 0
+            or abs(support_count - skeptic_count) >= max(2, int(target_k / 2))
+        ) and "UNBALANCED_STANCE_EVIDENCE" not in flags:
+            flags.append("UNBALANCED_STANCE_EVIDENCE")
 
     domains = {_domain_key(item.get("url", "")) for item in selected if item.get("url")}
     if len(selected) >= 2 and len(domains) <= 1 and "LOW_SOURCE_DIVERSITY" not in flags:
         flags.append("LOW_SOURCE_DIVERSITY")
 
     return flags
+
+
+def _clamp_threshold(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _resolve_base_threshold(claim_mode: str) -> float:
+    if claim_mode == "fact":
+        return _clamp_threshold(settings.stage5_threshold_standard)
+    if claim_mode == "mixed":
+        return _clamp_threshold(settings.stage5_threshold_mixed)
+    return _clamp_threshold(settings.stage5_threshold_rumor)
+
+
+def _resolve_threshold_floor(claim_mode: str, base_threshold: float) -> float:
+    if claim_mode == "mixed":
+        floor = _clamp_threshold(settings.stage5_threshold_backoff_min_mixed)
+    elif claim_mode == "rumor":
+        floor = _clamp_threshold(settings.stage5_threshold_backoff_min_rumor)
+    else:
+        floor = base_threshold
+    return min(base_threshold, floor)
+
+
+def _filter_thresholded(scored: list[dict[str, Any]], threshold: float) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in scored
+        if isinstance(item, dict) and float(item.get("score") or 0.0) >= threshold
+    ]
+
+
+def _apply_threshold_backoff(
+    scored: list[dict[str, Any]],
+    *,
+    claim_mode: str,
+    base_threshold: float,
+    threshold_floor: float,
+    threshold_target_min: int,
+) -> tuple[list[dict[str, Any]], float, int]:
+    threshold = base_threshold
+    thresholded = _filter_thresholded(scored, threshold)
+    backoff_steps = 0
+
+    if claim_mode not in {"rumor", "mixed"}:
+        return thresholded, threshold, backoff_steps
+
+    step = max(0.0, float(settings.stage5_threshold_backoff_step))
+    if step <= 0.0:
+        return thresholded, threshold, backoff_steps
+
+    while len(thresholded) < threshold_target_min and threshold > (threshold_floor + 1e-9):
+        next_threshold = max(threshold_floor, threshold - step)
+        if next_threshold >= threshold:
+            break
+        threshold = next_threshold
+        thresholded = _filter_thresholded(scored, threshold)
+        backoff_steps += 1
+        if threshold <= (threshold_floor + 1e-9):
+            break
+
+    return thresholded, threshold, backoff_steps
+
+
+def _apply_threshold_failopen(
+    scored: list[dict[str, Any]],
+    thresholded: list[dict[str, Any]],
+    *,
+    claim_mode: str,
+    target_k: int,
+) -> tuple[list[dict[str, Any]], bool, int]:
+    if claim_mode not in {"rumor", "mixed"}:
+        return thresholded, False, 0
+    if not bool(settings.stage5_failopen_enabled):
+        return thresholded, False, 0
+
+    min_items = max(1, min(target_k, int(settings.stage5_failopen_min_items)))
+    if len(thresholded) >= min_items:
+        return thresholded, False, 0
+
+    min_score = _clamp_threshold(settings.stage5_failopen_min_score)
+    rescue_pool = [
+        item
+        for item in scored
+        if isinstance(item, dict) and float(item.get("score") or 0.0) >= min_score
+    ]
+    rescue_pool.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    need = max(0, min_items - len(thresholded))
+    rescued = rescue_pool[:need]
+    if not rescued:
+        return thresholded, False, 0
+    return _merge_candidates(thresholded, rescued), True, len(rescued)
 
 
 async def run_async(state: dict) -> dict:
@@ -255,28 +400,38 @@ async def run_async(state: dict) -> dict:
     claim_mode = _normalize_mode(state.get("claim_mode"))
     rumor_mode = claim_mode in {"rumor", "mixed"}
 
-    threshold = float(settings.stage5_threshold_rumor if rumor_mode else settings.stage5_threshold_standard)
     target_k = int(settings.stage5_topk_rumor if rumor_mode else settings.stage5_topk_standard)
     support_target_k = max(1, int(settings.stage5_topk_support))
     skeptic_target_k = max(1, int(settings.stage5_topk_skeptic))
     domain_cap = max(0, int(settings.stage5_domain_cap))
     soft_split_enabled = bool(settings.stage5_soft_split_enabled)
     shared_trust_min = float(settings.stage5_shared_trust_min)
+    base_threshold = _resolve_base_threshold(claim_mode)
+    threshold_floor = _resolve_threshold_floor(claim_mode, base_threshold)
+    threshold_target_min = max(1, min(target_k, int(settings.stage5_threshold_backoff_target_min)))
+    thresholded, threshold, threshold_backoff_steps = _apply_threshold_backoff(
+        scored,
+        claim_mode=claim_mode,
+        base_threshold=base_threshold,
+        threshold_floor=threshold_floor,
+        threshold_target_min=threshold_target_min,
+    )
+    thresholded, threshold_failopen_used, threshold_failopen_added = _apply_threshold_failopen(
+        scored,
+        thresholded,
+        claim_mode=claim_mode,
+        target_k=target_k,
+    )
 
     logger.info(
-        "Stage 5 Start. candidates=%d mode=%s threshold=%.2f target_k=%d domain_cap=%d",
+        "Stage 5 Start. candidates=%d mode=%s base_threshold=%.2f threshold=%.2f target_k=%d domain_cap=%d",
         len(scored),
         claim_mode,
+        base_threshold,
         threshold,
         target_k,
         domain_cap,
     )
-
-    thresholded = [
-        item
-        for item in scored
-        if isinstance(item, dict) and float(item.get("score") or 0.0) >= threshold
-    ]
 
     support_pool = [item for item in thresholded if _candidate_stance(item) == "support"]
     skeptic_pool = [item for item in thresholded if _candidate_stance(item) == "skeptic"]
@@ -305,11 +460,36 @@ async def run_async(state: dict) -> dict:
         )
         if not support_selection:
             support_selection = list(final_selection[:support_target_k])
-        if not skeptic_selection:
-            skeptic_selection = list(final_selection[:skeptic_target_k])
     else:
         support_selection = list(final_selection)
         skeptic_selection = list(final_selection)
+
+    skeptic_rescued_count = 0
+    if soft_split_enabled and rumor_mode and bool(settings.stage5_skeptic_rescue_enabled) and not skeptic_selection:
+        rescue_min_score = _clamp_threshold(settings.stage5_skeptic_rescue_min_score)
+        rescue_max_items = max(1, int(settings.stage5_skeptic_rescue_max_items))
+        skeptic_rescue_pool = [
+            item
+            for item in scored
+            if isinstance(item, dict)
+            and _candidate_stance(item) == "skeptic"
+            and float(item.get("score") or 0.0) >= rescue_min_score
+        ]
+        skeptic_selection = _select_adaptive_topk(
+            skeptic_rescue_pool,
+            target_k=min(skeptic_target_k, rescue_max_items),
+            domain_cap=domain_cap,
+            rumor_mode=False,
+        )
+        skeptic_rescued_count = len(skeptic_selection)
+
+    if soft_split_enabled and rumor_mode:
+        final_selection = _compose_balanced_selection(
+            support_selection,
+            skeptic_selection,
+            fallback_selection=final_selection,
+            target_k=target_k,
+        )
 
     citation_index: dict[str, dict[str, Any]] = {}
     enrichment_tasks = []
@@ -370,10 +550,16 @@ async def run_async(state: dict) -> dict:
     risk_flags = _derive_risk_flags(
         state.get("risk_flags", []) if isinstance(state.get("risk_flags"), list) else [],
         selected=final_selection,
+        support_selection=support_selection,
+        skeptic_selection=skeptic_selection,
         thresholded_count=len(thresholded),
         target_k=target_k,
         rumor_mode=rumor_mode,
     )
+    if skeptic_rescued_count > 0 and "SKEPTIC_RESCUE_USED" not in risk_flags:
+        risk_flags.append("SKEPTIC_RESCUE_USED")
+    if threshold_failopen_used and "THRESHOLD_FAILOPEN_USED" not in risk_flags:
+        risk_flags.append("THRESHOLD_FAILOPEN_USED")
 
     def _avg_trust(items: list[dict[str, Any]]) -> float:
         if not items:
@@ -384,6 +570,13 @@ async def run_async(state: dict) -> dict:
     diagnostics = {
         "claim_mode": claim_mode,
         "threshold": round(threshold, 4),
+        "base_threshold": round(base_threshold, 4),
+        "threshold_floor": round(threshold_floor, 4),
+        "threshold_target_min": threshold_target_min,
+        "threshold_backoff_steps": threshold_backoff_steps,
+        "threshold_backoff_applied": bool(threshold_backoff_steps > 0),
+        "threshold_failopen_used": threshold_failopen_used,
+        "threshold_failopen_added": threshold_failopen_added,
         "thresholded_count": len(thresholded),
         "selected_k": len(citations),
         "target_k": target_k,
@@ -399,6 +592,8 @@ async def run_async(state: dict) -> dict:
         "skeptic_target_k": skeptic_target_k,
         "support_avg_trust": _avg_trust(support_selection),
         "skeptic_avg_trust": _avg_trust(skeptic_selection),
+        "skeptic_rescued_count": skeptic_rescued_count,
+        "balanced_selection_used": bool(soft_split_enabled and rumor_mode),
     }
 
     logger.info("Stage 5 Complete. selected=%d flags=%s", len(citations), risk_flags)

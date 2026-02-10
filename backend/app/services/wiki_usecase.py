@@ -156,62 +156,100 @@ def retrieve_wiki_hits(
     """
     repo = WikiRepository(db)
     search_mode = _resolve_search_mode(search_mode)
+    vector_only = search_mode == "vector"
     q_norm = normalize_question_to_query(question)
     keywords = extract_keywords(q_norm)
     
     # Prepare Vector (Lazy)
     print(f"DEBUG: retrieve_wiki_hits mode={search_mode}, keywords={keywords}")
     q_vec_lit = None
+    embed_error: Optional[str] = None
+    vector_db_calls = 0
+    direct_vector_fastpath = False
+    query_embed_backend = str(settings.wiki_query_embed_backend or "auto").strip().lower() or "auto"
+    query_embed_model = str(settings.wiki_query_embed_model or settings.embed_model).strip()
     if search_mode in ["auto", "vector"]:
         try:
-            q_vec = embed_texts([question])[0]
+            q_vec = embed_texts(
+                [question],
+                model=query_embed_model,
+                backend=query_embed_backend,
+            )[0]
             q_vec_lit = vec_to_pgvector_literal(q_vec)
         except Exception as e:
+            embed_error = str(e)
             print(f"Warning: Failed to embed question: {e}")
-            # If auto, fallback to fts implies continuing without vector
-            if search_mode == "vector":
-                raise e
+            # Vector mode is fail-closed: keep empty result set and expose embed_error in debug.
 
     # --- 1. Candidate Selection ---
     candidates = []
     candidates_kw = []
     candidates_fts = []
     candidates_vec = []
-    
-    if page_ids:
+    hits: list[dict[str, Any]] = []
+
+    if vector_only and q_vec_lit and not page_ids:
+        # Strict vector-only fast path:
+        # one ANN retrieval + in-memory dedupe to avoid repeated vector SQLs.
+        direct_vector_fastpath = True
+        oversample_k = max(top_k * RERANK_OVERSAMPLE, top_k)
+        hits = repo.vector_search(q_vec_lit, top_k=oversample_k)
+        vector_db_calls += 1
+        candidate_map: dict[int, str] = {}
+        for hit in hits:
+            pid = int(hit.get("page_id") or 0)
+            title = str(hit.get("title") or "")
+            if pid <= 0 or pid in candidate_map:
+                continue
+            candidate_map[pid] = title
+            if len(candidate_map) >= page_limit:
+                break
+        candidates = [{"page_id": pid, "title": title} for pid, title in candidate_map.items()]
+    elif page_ids:
         # If explicit page_ids provided
         candidates = [{"page_id": pid, "title": "Explicit"} for pid in page_ids]
     else:
-        # A. Keyword Title Match (Lexical) - HIGHEST PRIORITY
-        if search_mode in ["auto", "lexical"]:
-            # Use ANY keyword matching (OR logic) for better recall
-            # "니파바이러스" should match pages with "니파바이러스" in title
-            candidates_kw = repo.find_pages_by_any_keyword(keywords, limit=page_limit)
-        
-        # B. Chunk FTS Match (FTS) - ONLY if no title matches found
-        # FTS can produce garbage results via partial matching (e.g., "코로나" → "모로니")
-        # Skip FTS if we already have good title matches
-        if search_mode in ["auto", "fts"] and not candidates_kw:
-            q_fts = " ".join(keywords) if keywords else q_norm
-            candidates_fts = repo.find_candidates_by_chunk_fts(q_fts, limit=page_limit)
+        if vector_only:
+            if q_vec_lit:
+                candidates_vec = repo.vector_search_candidates(q_vec_lit, limit=page_limit)
+                vector_db_calls += 1
+        else:
+            # A. Keyword Title Match (Lexical) - HIGHEST PRIORITY
+            if search_mode in ["auto", "lexical"]:
+                # Use ANY keyword matching (OR logic) for better recall
+                # "니파바이러스" should match pages with "니파바이러스" in title
+                candidates_kw = repo.find_pages_by_any_keyword(keywords, limit=page_limit)
+            
+            # B. Chunk FTS Match (FTS) - ONLY if no title matches found
+            # FTS can produce garbage results via partial matching (e.g., "코로나" → "모로니")
+            # Skip FTS if we already have good title matches
+            if search_mode in ["auto", "fts"] and not candidates_kw:
+                q_fts = " ".join(keywords) if keywords else q_norm
+                candidates_fts = repo.find_candidates_by_chunk_fts(q_fts, limit=page_limit)
 
-        # C. Vector Candidates (Vector)
-        if search_mode in ["auto", "vector"] and q_vec_lit:
-            candidates_vec = repo.vector_search_candidates(q_vec_lit, limit=page_limit)
+            # C. Vector Candidates (Vector)
+            if search_mode in ["auto", "vector"] and q_vec_lit:
+                candidates_vec = repo.vector_search_candidates(q_vec_lit, limit=page_limit)
+                vector_db_calls += 1
 
     candidate_map = {}
     
-    # Prioritize: Keyword > FTS > Vector
-    for pid, title in candidates_kw:
-        candidate_map[pid] = title
-    
-    for pid, title in candidates_fts:
-        if pid not in candidate_map:
+    if vector_only:
+        for pid, title in candidates_vec:
+            if pid not in candidate_map:
+                candidate_map[pid] = title
+    else:
+        # Prioritize: Keyword > FTS > Vector
+        for pid, title in candidates_kw:
             candidate_map[pid] = title
-    
-    for pid, title in candidates_vec:
-        if pid not in candidate_map:
-            candidate_map[pid] = title
+        
+        for pid, title in candidates_fts:
+            if pid not in candidate_map:
+                candidate_map[pid] = title
+        
+        for pid, title in candidates_vec:
+            if pid not in candidate_map:
+                candidate_map[pid] = title
     
     candidates = [{"page_id": pid, "title": title} for pid, title in candidate_map.items()]
     
@@ -225,21 +263,21 @@ def retrieve_wiki_hits(
     
     # Ensure Embeddings (Skip for pure Lexical/FTS to avoid blocking)
     updated_embeddings = 0
-    if embed_missing and candidate_ids and search_mode in ["auto", "vector"]:
+    if embed_missing and candidate_ids and search_mode in ["auto", "vector"] and (not direct_vector_fastpath):
         try:
             updated_embeddings = ensure_wiki_embeddings(db, candidate_ids)
         except Exception as e:
             print(f"Warning: Failed to ensure embeddings: {e}")
 
     # --- 2. Vector Search (Oversample) ---
-    hits = []
     oversample_k = top_k * RERANK_OVERSAMPLE
-    if q_vec_lit and candidate_ids:
+    if (not direct_vector_fastpath) and q_vec_lit and candidate_ids:
         # Fetch more than needed to allow FTS reranking to promote relevant but slightly far vectors
         hits = repo.vector_search(q_vec_lit, top_k=oversample_k, page_ids=candidate_ids)
+        vector_db_calls += 1
 
     # --- 2.5 FTS Fallback (Critical if embeddings are missing) ---
-    if len(hits) < top_k:
+    if (not vector_only) and len(hits) < top_k:
         # Strategy: Prioritize chunks from "Title Match" candidates first.
         # If we have strong candidates (e.g. title "이재명 피습 사건" for query "이재명 피습"),
         # we MUST include their content.
@@ -292,7 +330,9 @@ def retrieve_wiki_hits(
     
     # --- 3. Hybrid Reranking ---
     # Calculate FTS scores for the retrieved chunks
-    if hits:
+    if vector_only:
+        fts_scores = {}
+    elif hits:
         hit_chunk_ids = [h["chunk_id"] for h in hits]
         # Use q_fts or q_norm
         q_fts_rank = " ".join(keywords) if keywords else q_norm
@@ -303,10 +343,20 @@ def retrieve_wiki_hits(
     processed_hits = []
     for h in hits:
         chunk_fts_score = fts_scores.get(h["chunk_id"], 0.0)
-        
-        score = calculate_hybrid_score(h, keywords, fts_rank=chunk_fts_score)
-        h["final_score"] = score
-        h["lex_score"] = chunk_fts_score # Show FTS rank as lexical score
+        if vector_only:
+            dist_value = h.get("dist")
+            if h.get("final_score") is not None:
+                score = float(h.get("final_score") or 0.0)
+            elif dist_value is None:
+                score = 0.0
+            else:
+                score = 1.0 / (1.0 + float(dist_value))
+            h["final_score"] = min(max(score, 0.0), 1.0)
+            h["lex_score"] = float(h.get("lex_score") or 0.0)
+        else:
+            score = calculate_hybrid_score(h, keywords, fts_rank=chunk_fts_score)
+            h["final_score"] = score
+            h["lex_score"] = chunk_fts_score # Show FTS rank as lexical score
         processed_hits.append(h)
     
     processed_hits.sort(key=lambda x: x["final_score"], reverse=True)
@@ -403,9 +453,16 @@ def retrieve_wiki_hits(
         "updated_embeddings": updated_embeddings,
         "debug": {
             "mode": search_mode,
+            "vector_only": vector_only,
+            "direct_vector_fastpath": direct_vector_fastpath,
+            "vector_db_calls": vector_db_calls,
             "keywords": keywords,
             "query_used": q_fts_fallback if 'q_fts_fallback' in locals() else q_norm,
+            "query_used_normalized": q_norm,
+            "query_embed_backend": query_embed_backend,
+            "query_embed_model": query_embed_model,
             "candidates_count": len(candidates),
+            "embed_error": embed_error,
         },
         "candidates": candidates,
         "prompt_context": "\n".join(context_parts),

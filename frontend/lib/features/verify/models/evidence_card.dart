@@ -40,7 +40,7 @@ class EvidenceCard {
     }
 
     return EvidenceCard(
-      title: toStr(json['title'] ?? json['headline']),
+      title: toStr(json['title'] ?? json['headline'] ?? json['source_title']),
       source: toStr(
         json['source'] ??
             json['publisher'] ??
@@ -48,9 +48,16 @@ class EvidenceCard {
             json['source_type'] ??
             sourceFromUrl(json['url'] ?? json['link']),
       ),
-      snippet: toStr(json['snippet'] ?? json['summary'] ?? json['quote']),
-      url: toStr(json['url'] ?? json['link']),
-      score: toDouble(json['score'] ?? json['relevance'] ?? json['confidence']),
+      snippet: toStr(
+        json['snippet'] ?? json['summary'] ?? json['quote'] ?? json['point'],
+      ),
+      url: toStr(json['url'] ?? json['link'] ?? json['source_url']),
+      score: toDouble(
+        json['score'] ??
+            json['relevance'] ??
+            json['confidence'] ??
+            json['trust_score'],
+      ),
       publishedAt: toStr(json['publishedAt'] ?? json['published_at'] ?? json['date']),
       stance: toStr(json['stance'] ?? json['polarity']),
     );

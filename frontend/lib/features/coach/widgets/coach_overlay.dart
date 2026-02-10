@@ -52,6 +52,11 @@ class _CoachOverlayState extends State<CoachOverlay>
 
   static const double _closeRight = 16.0;
 
+  // 각 단계별 설명 박스와 하이라이트 간격
+  static const double _guideCardGapStep1 = 16.0; // Step 1: 좁게
+  static const double _guideCardGapStep2 = 56.0; // Step 2: 넓게
+  static const double _guideCardGapStep3 = 40.0; // Step 3: 적절
+
   @override
   void initState() {
     super.initState();
@@ -105,8 +110,16 @@ class _CoachOverlayState extends State<CoachOverlay>
     // 설정 아이콘과 동일한 위치 계산
     final double closeTop = padding.top + 8; // AppBar(64) 기준 정렬
 
-    // 항상 하이라이트 아래에 카드 배치
-    final double guideTop = highlightRect.bottom + 16;
+    // step에 따라 카드 위치 조정: 각 단계별 간격 적용
+    final double gap = step == 1
+        ? _guideCardGapStep1
+        : step == 2
+            ? _guideCardGapStep2
+            : _guideCardGapStep3;
+
+    final double guideTop = step == 1
+        ? highlightRect.bottom + gap  // 첫 번째: 하이라이트 아래
+        : highlightRect.top - gap - _GuideCard.estimatedHeight; // 2-3번째: 하이라이트 위
     final double guideTopClamped = guideTop.clamp(
       padding.top + 12,
       size.height - 12 - _GuideCard.estimatedHeight,

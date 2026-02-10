@@ -1,5 +1,5 @@
-import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 class ApiClient {
   static const String baseUrl = String.fromEnvironment('API_URL', defaultValue: 'http://127.0.0.1:8080');

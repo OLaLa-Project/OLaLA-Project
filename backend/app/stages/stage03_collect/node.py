@@ -31,9 +31,9 @@ _SOURCE_PRIOR = {
     "WIKIPEDIA": 0.78,
     "KNOWLEDGE_BASE": 0.78,
     "KB_DOC": 0.78,
-    "NEWS": 0.66,
-    "WEB_URL": 0.54,
-    "WEB": 0.54,
+    "NEWS": 0.58,
+    "WEB_URL": 0.44,
+    "WEB": 0.44,
 }
 _INTENT_BONUS = {
     "official_statement": 0.08,
@@ -51,14 +51,31 @@ _TRACKING_QUERY_PREFIXES = (
 )
 _LOW_QUALITY_WEB_DOMAINS = {
     "airbnb.com",
+    "ask.com",
+    "baidu.com",
+    "blogspot.com",
+    "dic.daum.net",
+    "kin.naver.com",
+    "namu.wiki",
     "play.google.com",
     "apps.apple.com",
+    "quora.com",
+    "reddit.com",
     "youtube.com",
     "youtu.be",
+    "wiktionary.org",
+    "wordrow.kr",
     "zhihu.com",
     "stackexchange.com",
     "stackoverflow.com",
 }
+_LOW_QUALITY_TITLE_PATTERNS = (
+    re.compile(r"(사전|뜻|의미|dictionary|번역|단어\s*뜻)", re.IGNORECASE),
+    re.compile(r"(도움말|help|faq|q\s*&\s*a|질문.?답변|사용법|how\s*to)", re.IGNORECASE),
+    re.compile(r"(예시|sample|template|서식)", re.IGNORECASE),
+)
+_CJK_CHAR_PATTERN = re.compile(r"[\u4e00-\u9fff]")
+_HANGUL_CHAR_PATTERN = re.compile(r"[가-힣]")
 _ALLOWED_STANCES = {"support", "skeptic", "neutral"}
 
 
@@ -245,34 +262,42 @@ async def _safe_execute_with_context(coro, query_meta: dict[str, Any], timeout=1
     return enriched
 
 
-async def _search_wiki(query: str, search_mode: str) -> List[Dict[str, Any]]:
-    """Execute Wiki Search."""
-    results = []
+async def _search_wiki(query: str, search_mode: str) -> dict[str, Any]:
+    """Execute Wiki Search and propagate retriever debug info."""
+    results: list[dict[str, Any]] = []
+    debug: dict[str, Any] = {}
+    result_cap = max(1, int(settings.stage3_wiki_result_cap))
     try:
         def _sync_wiki_task():
             with SessionLocal() as db:
                 return retrieve_wiki_hits(
                     db=db,
                     question=query,
-                    top_k=3,
+                    top_k=result_cap,
                     window=2,
-                    page_limit=3,
+                    page_limit=result_cap,
                     embed_missing=True,
                     search_mode=search_mode,
                 )
 
         hits_data = await asyncio.to_thread(_sync_wiki_task)
+        if isinstance(hits_data, dict):
+            raw_debug = hits_data.get("debug")
+            if isinstance(raw_debug, dict):
+                debug = dict(raw_debug)
 
-        for h in hits_data.get("hits", []):
+        for h in hits_data.get("hits", []) if isinstance(hits_data, dict) else []:
+            if not isinstance(h, dict):
+                continue
             results.append(
                 {
                     "source_type": "WIKIPEDIA",
-                    "title": h["title"],
-                    "url": f"wiki://page/{h['page_id']}",
-                    "content": h["content"],
+                    "title": h.get("title", ""),
+                    "url": f"wiki://page/{h.get('page_id')}",
+                    "content": h.get("content", ""),
                     "metadata": {
-                        "page_id": h["page_id"],
-                        "chunk_id": h["chunk_id"],
+                        "page_id": h.get("page_id"),
+                        "chunk_id": h.get("chunk_id"),
                         "dist": h.get("dist"),
                         "lex_score": h.get("lex_score"),
                         "search_query": query,
@@ -280,8 +305,9 @@ async def _search_wiki(query: str, search_mode: str) -> List[Dict[str, Any]]:
                 }
             )
     except Exception as e:
+        debug["embed_error"] = str(e)
         logger.error("Wiki Search Failed for '%s': %s", query, e)
-    return results
+    return {"items": results, "debug": debug}
 
 
 async def _search_naver(
@@ -462,6 +488,99 @@ def _extract_queries(state: dict) -> list[dict[str, Any]]:
     return search_queries
 
 
+def _normalize_query_key(text: str) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    return re.sub(r"[^0-9a-zA-Z가-힣]", "", compact)
+
+
+def _clip_query_text(text: str, *, max_chars: int = 50) -> str:
+    cleaned = _clean_text(text)
+    max_chars = max(20, int(max_chars))
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[:max_chars].strip()
+
+
+def _is_blocked_domain(domain: str) -> bool:
+    normalized = str(domain or "").strip().lower()
+    if normalized.startswith("www."):
+        normalized = normalized[4:]
+    if not normalized:
+        return False
+    return any(normalized == blocked or normalized.endswith(f".{blocked}") for blocked in _LOW_QUALITY_WEB_DOMAINS)
+
+
+def _is_low_quality_title(title: str) -> bool:
+    cleaned = _clean_text(title)
+    if not cleaned:
+        return False
+    return any(pattern.search(cleaned) is not None for pattern in _LOW_QUALITY_TITLE_PATTERNS)
+
+
+def _is_blocked_language(title: str, content: str) -> bool:
+    text = f"{_clean_text(title)} {_clean_text(content)}".strip()
+    if not text:
+        return False
+    cjk_count = len(_CJK_CHAR_PATTERN.findall(text))
+    if cjk_count < 6:
+        return False
+    return _HANGUL_CHAR_PATTERN.search(text) is None
+
+
+def _web_filter_reason(item: dict[str, Any]) -> str | None:
+    source_type = str(item.get("source_type") or "").upper()
+    if source_type not in {"WEB_URL", "WEB"}:
+        return None
+    url = _clean_text(item.get("url"))
+    domain = _domain_from_url(url)
+    if _is_blocked_domain(domain):
+        return "domain"
+    if _is_low_quality_title(item.get("title", "")):
+        return "pattern"
+    if _is_blocked_language(item.get("title", ""), item.get("content", "")):
+        return "language"
+    return None
+
+
+def _prepare_web_queries(search_queries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    original_count = 0
+
+    for query in search_queries:
+        qtype = str(query.get("type", "direct")).strip().lower() or "direct"
+        if qtype not in {"news", "web", "verification", "direct"}:
+            continue
+
+        original_text = _clean_text(query.get("text", ""))
+        if not original_text:
+            continue
+        original_count += 1
+
+        clipped_text = _clip_query_text(
+            original_text,
+            max_chars=max(20, int(settings.stage3_web_query_max_chars)),
+        )
+        key = _normalize_query_key(clipped_text)
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+
+        cloned = dict(query)
+        cloned["type"] = qtype
+        cloned["text"] = clipped_text
+        prepared.append(cloned)
+
+    avg_query_len = round(sum(len(str(item.get("text") or "")) for item in prepared) / len(prepared), 2) if prepared else 0.0
+    diagnostics = {
+        "web_query_count": original_count,
+        "web_query_deduped_count": len(prepared),
+        "avg_query_len": avg_query_len,
+        "queries_used": [_query_context(item) for item in prepared],
+    }
+    return prepared, diagnostics
+
+
 def _normalize_wiki_query(text: str) -> List[str]:
     """
     위키 쿼리 정규화: LLM이 생성한 표제어를 정제.
@@ -485,54 +604,74 @@ def _normalize_wiki_query(text: str) -> List[str]:
 async def run_wiki_async(state: dict) -> dict:
     """Execute Only Wiki Search (async)."""
     search_queries = _extract_queries(state)
-    search_mode = state.get("search_mode", "lexical")
+    vector_only = bool(settings.stage3_wiki_strict_vector_only)
+    default_mode = str(state.get("search_mode", "lexical") or "lexical")
 
-    tasks = []
-    
     # 1. Select the best single query for Vector Search
     best_query_text = ""
     best_query_meta = {}
-    best_search_mode = search_mode
+    best_search_mode = "vector" if vector_only else default_mode
 
-    # Priority: First 'wiki' type -> First 'direct' type -> core_fact/fallback
-    # Since we want a sentence for vector search, we prefer longer, descriptive queries.
-    
+    # Strict mode: only wiki query is allowed for Stage3 wiki retrieval.
     candidate_queries = [q for q in search_queries if str(q.get("type", "")).strip().lower() == "wiki"]
-    if not candidate_queries:
-         candidate_queries = [q for q in search_queries if str(q.get("type", "")).strip().lower() == "direct"]
     
     if candidate_queries:
         # Use the first valid candidate
         target = candidate_queries[0]
         best_query_text = _clean_text(target.get("text", ""))
         best_query_meta = _query_context(target)
-        best_search_mode = target.get("search_mode", search_mode)
-    
-    if not best_query_text:
-        # Fallback to claim text if no specific query found
-        best_query_text = str(state.get("claim_text") or "").strip()
-        best_query_meta = {"intent": "general", "mode": "fact", "stance": "neutral"}
-    
-    # 2. Execute ONE search if we have a query
-    if best_query_text:
-        # Don't normalize/split into terms. Use the full sentence for vector search.
-        logger.info("Executing Single Wiki Vector Search: '%s'", best_query_text)
-        
-        # Ensure meta defines it as wiki
-        if not best_query_meta.get("query_type"):
-            best_query_meta["query_type"] = "wiki"
-            
-        tasks.append(
-            _safe_execute_with_context(
-                _search_wiki(best_query_text, best_search_mode),
-                best_query_meta,
-                timeout=600.0,
-                name=f"Wiki-Vector:{best_query_text[:20]}",
-            )
-        )
+        if not vector_only:
+            best_search_mode = str(target.get("search_mode", default_mode) or default_mode)
 
-    results = await asyncio.gather(*tasks) if tasks else []
-    flat = [item for sublist in results for item in sublist]
+    diagnostics = {
+        "wiki_query_used": best_query_text,
+        "wiki_search_mode_used": best_search_mode,
+        "vector_only": vector_only,
+        "wiki_result_cap": max(1, int(settings.stage3_wiki_result_cap)),
+        "wiki_query_count": len(candidate_queries),
+        "embed_error": None,
+        "candidates_count": 0,
+        "query_used_normalized": "",
+        "vector_db_calls": 0,
+        "direct_vector_fastpath": False,
+    }
+
+    if not best_query_text:
+        logger.info("Stage 3 (Wiki) skipped: no wiki query")
+        diagnostics["wiki_result_count"] = 0
+        return {"wiki_candidates": [], "stage03_wiki_diagnostics": diagnostics}
+
+    # 2. Execute ONE search if we have a query
+    logger.info("Executing Single Wiki Vector Search: '%s'", best_query_text)
+
+    # Ensure meta defines it as wiki
+    if not best_query_meta.get("query_type"):
+        best_query_meta["query_type"] = "wiki"
+
+    search_result = await _safe_execute(
+        _search_wiki(best_query_text, best_search_mode),
+        timeout=600.0,
+        name=f"Wiki-Vector:{best_query_text[:20]}",
+    )
+
+    wiki_debug: dict[str, Any] = {}
+    raw_items: list[dict[str, Any]] = []
+    if isinstance(search_result, dict):
+        raw_debug = search_result.get("debug")
+        if isinstance(raw_debug, dict):
+            wiki_debug = dict(raw_debug)
+        items = search_result.get("items")
+        if isinstance(items, list):
+            raw_items = [item for item in items if isinstance(item, dict)]
+    elif isinstance(search_result, list):
+        raw_items = [item for item in search_result if isinstance(item, dict)]
+
+    flat: list[dict[str, Any]] = []
+    for item in raw_items:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        enriched = dict(item)
+        enriched["metadata"] = _merge_metadata(metadata, best_query_meta)
+        flat.append(enriched)
 
     deduped: dict[tuple[Any, str], dict[str, Any]] = {}
     for item in flat:
@@ -548,8 +687,19 @@ async def run_wiki_async(state: dict) -> dict:
             deduped[key] = item
 
     final_items = list(deduped.values())
+    result_cap = max(1, int(settings.stage3_wiki_result_cap))
+    if len(final_items) > result_cap:
+        final_items = final_items[:result_cap]
     logger.info("Stage 3 (Wiki) Complete. Found %d", len(final_items))
-    return {"wiki_candidates": final_items}
+    diagnostics["wiki_result_count"] = len(final_items)
+    diagnostics["embed_error"] = wiki_debug.get("embed_error")
+    diagnostics["candidates_count"] = int(wiki_debug.get("candidates_count") or 0)
+    diagnostics["query_used_normalized"] = str(
+        wiki_debug.get("query_used_normalized") or _clean_text(best_query_text)
+    )
+    diagnostics["vector_db_calls"] = int(wiki_debug.get("vector_db_calls") or 0)
+    diagnostics["direct_vector_fastpath"] = bool(wiki_debug.get("direct_vector_fastpath"))
+    return {"wiki_candidates": final_items, "stage03_wiki_diagnostics": diagnostics}
 
 
 def run_wiki(state: dict) -> dict:
@@ -557,9 +707,69 @@ def run_wiki(state: dict) -> dict:
     return run_async_in_sync(run_wiki_async, state)
 
 
+def _trim_ddg_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    max_results = max(1, int(settings.stage3_web_ddg_fallback_max_results))
+    return results[:max_results]
+
+
+async def _collect_web_candidates_for_query(
+    query: dict[str, Any],
+    *,
+    timeout_budget: float,
+    naver_limiter: asyncio.Semaphore,
+    ddg_limiter: asyncio.Semaphore,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    text = _clean_text(query.get("text", ""))
+    qtype = str(query.get("type", "direct")).strip().lower() or "direct"
+    if not text:
+        return [], {"fallback_ddg_count": 0}
+
+    query_meta = _query_context(query)
+    naver_min_results = max(0, int(settings.stage3_web_naver_min_results))
+    fallback_ddg_count = 0
+    collected: list[dict[str, Any]] = []
+
+    if qtype == "web":
+        ddg_results = await _safe_execute_with_context(
+            _search_duckduckgo(text, limiter=ddg_limiter),
+            query_meta,
+            timeout=timeout_budget,
+            name=f"DDG:{text[:10]}",
+        )
+        return _trim_ddg_results(ddg_results), {"fallback_ddg_count": 0}
+
+    naver_results = await _safe_execute_with_context(
+        _search_naver(text, limiter=naver_limiter),
+        query_meta,
+        timeout=timeout_budget,
+        name=f"Naver:{text[:10]}",
+    )
+    collected.extend(naver_results)
+
+    should_fallback_ddg = False
+    if qtype == "news":
+        should_fallback_ddg = len(naver_results) < naver_min_results
+    elif qtype in {"verification", "direct"}:
+        should_fallback_ddg = len(naver_results) < naver_min_results
+
+    if should_fallback_ddg:
+        ddg_results = await _safe_execute_with_context(
+            _search_duckduckgo(text, limiter=ddg_limiter),
+            query_meta,
+            timeout=timeout_budget,
+            name=f"DDG:{text[:10]}",
+        )
+        if ddg_results:
+            collected.extend(_trim_ddg_results(ddg_results))
+        fallback_ddg_count = 1
+
+    return collected, {"fallback_ddg_count": fallback_ddg_count}
+
+
 async def run_web_async(state: dict) -> dict:
     """Execute Only Web/News Search (async)."""
     search_queries = _extract_queries(state)
+    prepared_queries, query_diagnostics = _prepare_web_queries(search_queries)
 
     tasks = []
     naver_limiter = asyncio.Semaphore(max(1, int(settings.naver_max_concurrency)))
@@ -567,62 +777,51 @@ async def run_web_async(state: dict) -> dict:
 
     timeout_budget = _api_timeout_seconds() * _api_retry_attempts() + 5.0
 
-    for query in search_queries:
-        text = _clean_text(query.get("text", ""))
-        qtype = str(query.get("type", "direct")).strip().lower() or "direct"
-        if not text:
+    for query in prepared_queries:
+        tasks.append(
+            _collect_web_candidates_for_query(
+                query,
+                timeout_budget=timeout_budget,
+                naver_limiter=naver_limiter,
+                ddg_limiter=ddg_limiter,
+            )
+        )
+
+    raw_results = await asyncio.gather(*tasks) if tasks else []
+    flat: list[dict[str, Any]] = []
+    fallback_ddg_count = 0
+    for candidates, stats in raw_results:
+        flat.extend(candidates)
+        fallback_ddg_count += int(stats.get("fallback_ddg_count", 0))
+
+    filtered: list[dict[str, Any]] = []
+    blocked_domain_count = 0
+    blocked_pattern_count = 0
+    blocked_language_count = 0
+    for item in flat:
+        if not isinstance(item, dict):
             continue
+        reason = _web_filter_reason(item)
+        if reason == "domain":
+            blocked_domain_count += 1
+            continue
+        if reason == "pattern":
+            blocked_pattern_count += 1
+            continue
+        if reason == "language":
+            blocked_language_count += 1
+            continue
+        filtered.append(item)
 
-        query_meta = _query_context(query)
-
-        if qtype == "news":
-            tasks.append(
-                _safe_execute_with_context(
-                    _search_naver(text, limiter=naver_limiter),
-                    query_meta,
-                    timeout=timeout_budget,
-                    name=f"Naver:{text[:10]}",
-                )
-            )
-            tasks.append(
-                _safe_execute_with_context(
-                    _search_duckduckgo(text, limiter=ddg_limiter),
-                    query_meta,
-                    timeout=timeout_budget,
-                    name=f"DDG:{text[:10]}",
-                )
-            )
-        elif qtype == "web":
-            tasks.append(
-                _safe_execute_with_context(
-                    _search_duckduckgo(text, limiter=ddg_limiter),
-                    query_meta,
-                    timeout=timeout_budget,
-                    name=f"DDG:{text[:10]}",
-                )
-            )
-        elif qtype in {"verification", "direct"}:
-            tasks.append(
-                _safe_execute_with_context(
-                    _search_duckduckgo(text, limiter=ddg_limiter),
-                    query_meta,
-                    timeout=timeout_budget,
-                    name=f"DDG:{text[:10]}",
-                )
-            )
-            tasks.append(
-                _safe_execute_with_context(
-                    _search_naver(text, limiter=naver_limiter),
-                    query_meta,
-                    timeout=timeout_budget,
-                    name=f"Naver:{text[:10]}",
-                )
-            )
-
-    results = await asyncio.gather(*tasks) if tasks else []
-    flat = [item for sublist in results for item in sublist]
-    logger.info("Stage 3 (Web) Complete. Found %d", len(flat))
-    return {"web_candidates": flat}
+    logger.info("Stage 3 (Web) Complete. Found %d (raw=%d)", len(filtered), len(flat))
+    diagnostics = dict(query_diagnostics)
+    diagnostics["web_result_count"] = len(filtered)
+    diagnostics["web_result_raw_count"] = len(flat)
+    diagnostics["blocked_domain_count"] = blocked_domain_count
+    diagnostics["blocked_pattern_count"] = blocked_pattern_count
+    diagnostics["blocked_language_count"] = blocked_language_count
+    diagnostics["fallback_ddg_count"] = fallback_ddg_count
+    return {"web_candidates": filtered, "stage03_web_diagnostics": diagnostics}
 
 
 def run_web(state: dict) -> dict:
@@ -679,9 +878,7 @@ def _is_low_quality_web_source(source_type: str, url: str) -> bool:
     if str(source_type or "").upper() in {"WIKIPEDIA", "KNOWLEDGE_BASE", "KB_DOC", "NEWS"}:
         return False
     domain = _domain_from_url(url)
-    if not domain:
-        return False
-    return any(domain == blocked or domain.endswith(f".{blocked}") for blocked in _LOW_QUALITY_WEB_DOMAINS)
+    return _is_blocked_domain(domain)
 
 
 def _is_similar_title(t1: str, t2: str, threshold: float = 0.9) -> bool:
@@ -713,13 +910,20 @@ def _compute_pre_score(candidate: dict[str, Any], claim_keywords: list[str]) -> 
     intent_bonus = _INTENT_BONUS.get(intent, 0.0)
     freshness = _freshness_bonus(metadata)
 
-    score = source_prior + (0.22 * title_overlap) + (0.20 * content_overlap) + intent_bonus + freshness
+    score = (
+        (0.46 * source_prior)
+        + (0.30 * title_overlap)
+        + (0.32 * content_overlap)
+        + intent_bonus
+        + freshness
+    )
     score = max(0.0, min(score, 1.0))
 
     breakdown = {
         "source_prior": round(source_prior, 4),
         "title_overlap": round(title_overlap, 4),
         "content_overlap": round(content_overlap, 4),
+        "max_overlap": round(max(title_overlap, content_overlap), 4),
         "intent_bonus": round(intent_bonus, 4),
         "freshness_bonus": round(freshness, 4),
     }
@@ -862,6 +1066,8 @@ def run_merge(state: dict) -> dict:
     """Merge Wiki and Web candidates with dedup/filter/pre-score/global cap."""
     wiki = state.get("wiki_candidates", [])
     web = state.get("web_candidates", [])
+    claim_mode = _normalize_mode(state.get("claim_mode"))
+    rumor_or_mixed = claim_mode in {"rumor", "mixed"}
 
     canonical = state.get("canonical_evidence", {}) or {}
     source_url = canonical.get("source_url", "")
@@ -874,6 +1080,8 @@ def run_merge(state: dict) -> dict:
     raw_candidates = list(wiki) + list(web)
     prepared: list[dict[str, Any]] = []
     low_quality_filtered = 0
+    filtered_by_overlap = 0
+    rescued_low_overlap = 0
 
     for candidate in raw_candidates:
         if not isinstance(candidate, dict):
@@ -910,6 +1118,32 @@ def run_merge(state: dict) -> dict:
             },
             claim_keywords,
         )
+        source_bucket = _bucket_source(candidate.get("source_type", ""))
+        max_overlap = float(breakdown.get("max_overlap", 0.0) or 0.0)
+        if source_bucket in {"news", "web"}:
+            min_overlap = max(0.0, float(settings.stage3_merge_min_overlap))
+            soft_overlap = max(min_overlap, float(settings.stage3_merge_soft_overlap))
+            if max_overlap < min_overlap:
+                filtered_by_overlap += 1
+                if not rumor_or_mixed:
+                    continue
+                rescued_low_overlap += 1
+                rescue_cap = min(
+                    float(settings.stage3_merge_low_overlap_score_cap),
+                    float(settings.stage3_merge_low_overlap_rescue_score_cap),
+                )
+                capped_score = min(score, rescue_cap)
+                if capped_score < score:
+                    score = round(capped_score, 4)
+                    breakdown["overlap_cap_applied"] = 1.0
+                    breakdown["overlap_cap_value"] = round(capped_score, 4)
+                breakdown["low_overlap_failopen"] = 1.0
+            if max_overlap < soft_overlap:
+                capped_score = min(score, float(settings.stage3_merge_low_overlap_score_cap))
+                if capped_score < score:
+                    score = round(capped_score, 4)
+                    breakdown["overlap_cap_applied"] = 1.0
+                    breakdown["overlap_cap_value"] = round(capped_score, 4)
 
         merged_metadata = dict(metadata)
         merged_metadata["pre_score"] = score
@@ -1004,6 +1238,8 @@ def run_merge(state: dict) -> dict:
             "after_cap": len(capped),
             "source_mix": source_mix,
             "low_quality_filtered": low_quality_filtered,
+            "filtered_by_overlap": filtered_by_overlap,
+            "rescued_low_overlap": rescued_low_overlap,
             "html_enriched_count": html_enriched_count,
             "html_fetch_fail_count": html_fetch_fail_count,
             "tier_distribution": tier_distribution,

@@ -43,6 +43,8 @@ class _ShellScreenState extends State<ShellScreen> {
   @override
   Widget build(BuildContext context) {
     final pages = const [HistoryScreen(), HomeInputScreen(), BookmarkScreen()];
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
     return Obx(() {
       // 탭 변경/리빌드 후에도 rect가 바뀔 수 있어 다시 측정
@@ -52,31 +54,55 @@ class _ShellScreenState extends State<ShellScreen> {
         body: IndexedStack(index: c.tabIndex.value, children: pages),
         bottomNavigationBar: Container(
           decoration: BoxDecoration(
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.06),
-                blurRadius: 0,
-                offset: const Offset(0, -1),
+            color: isDark ? theme.colorScheme.surface : Colors.white,
+            border: Border(
+              top: BorderSide(
+                color: isDark
+                    ? theme.colorScheme.outlineVariant.withOpacity(0.6)
+                    : Colors.transparent,
+                width: 1,
               ),
-            ],
+            ),
+            boxShadow: isDark
+                ? const []
+                : [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 0,
+                      offset: const Offset(0, -1),
+                    ),
+                  ],
           ),
           child: NavigationBarTheme(
             data: NavigationBarThemeData(
               indicatorColor: Colors.transparent,
               overlayColor: MaterialStateProperty.all(Colors.transparent),
-              backgroundColor: Colors.white,
-              iconTheme: MaterialStateProperty.resolveWith<IconThemeData>((states) {
+              backgroundColor: isDark
+                  ? theme.colorScheme.surface
+                  : Colors.white,
+              iconTheme: MaterialStateProperty.resolveWith<IconThemeData>((
+                states,
+              ) {
                 final selected = states.contains(MaterialState.selected);
                 return IconThemeData(
                   size: 32,
-                  color: selected ? Colors.black : const Color(0xff7a7a7a),
+                  color: selected
+                      ? (isDark ? theme.colorScheme.onSurface : Colors.black)
+                      : (isDark
+                            ? theme.colorScheme.onSurfaceVariant
+                            : const Color(0xff7a7a7a)),
                 );
               }),
-              labelTextStyle: MaterialStateProperty.resolveWith<TextStyle>((states) {
+              labelTextStyle: MaterialStateProperty.resolveWith<TextStyle>((
+                states,
+              ) {
                 final selected = states.contains(MaterialState.selected);
                 return TextStyle(
-                  color: selected ? Colors.black : const Color(0xff7a7a7a),
+                  color: selected
+                      ? (isDark ? theme.colorScheme.onSurface : Colors.black)
+                      : (isDark
+                            ? theme.colorScheme.onSurfaceVariant
+                            : const Color(0xff7a7a7a)),
                   fontSize: 12,
                 );
               }),
@@ -88,7 +114,9 @@ class _ShellScreenState extends State<ShellScreen> {
                 NavigationDestination(
                   icon: KeyedSubtree(
                     key: c.navHistoryKey,
-                    child: const Icon(PhosphorIconsRegular.clockCounterClockwise),
+                    child: const Icon(
+                      PhosphorIconsRegular.clockCounterClockwise,
+                    ),
                   ),
                   label: '히스토리',
                 ),

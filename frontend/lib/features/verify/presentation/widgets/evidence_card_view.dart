@@ -12,6 +12,8 @@ class EvidenceCardView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     final title = (card.title ?? '').trim();
     final source = (card.source ?? '').trim();
     final snippet = (card.snippet ?? '').trim();
@@ -20,16 +22,22 @@ class EvidenceCardView extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? theme.colorScheme.surface : Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE6ECFF)),
-        boxShadow: [
+        border: Border.all(
+          color: isDark
+              ? theme.colorScheme.outlineVariant
+              : const Color(0xFFE6ECFF),
+        ),
+        boxShadow: isDark
+            ? const []
+            : [
           BoxShadow(
             color: Colors.black.withOpacity(0.03),
             blurRadius: 14,
             offset: const Offset(0, 8),
           ),
-        ],
+              ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

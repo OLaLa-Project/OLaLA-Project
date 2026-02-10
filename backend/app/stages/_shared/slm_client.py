@@ -18,6 +18,7 @@ import json
 import time
 from typing import Optional
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from app.core.settings import settings
@@ -268,15 +269,55 @@ class SLMClient:
                 stream=stream,
             )
 
-        def _resolve_ollama_url() -> str:
-            # base URL에 /v1이 있으면 제거, 없으면 그대로 사용하여 /api/generate로 전환
-            if "/v1" in base:
-                return base.replace("/v1", "/api/generate")
-            return f"{base}/api/generate"
+        def _to_ollama_generate_url(base_url: str) -> str:
+            source = str(base_url or "").strip().rstrip("/")
+            if not source:
+                return ""
+            if source.endswith("/api/generate"):
+                return source
+            if source.endswith("/v1"):
+                return f"{source[:-3]}/api/generate"
+            return f"{source}/api/generate"
+
+        def _resolve_ollama_urls() -> list[str]:
+            urls: list[str] = []
+
+            def _append(url: str) -> None:
+                candidate = str(url or "").strip()
+                if not candidate:
+                    return
+                if candidate not in urls:
+                    urls.append(candidate)
+
+            _append(_to_ollama_generate_url(base))
+            _append(_to_ollama_generate_url(settings.ollama_url))
+
+            for original in list(urls):
+                try:
+                    parsed = urlsplit(original)
+                except Exception:
+                    continue
+                hostname = (parsed.hostname or "").strip().lower()
+                if hostname == "ollama":
+                    alias_host = "olala-ollama"
+                elif hostname == "olala-ollama":
+                    alias_host = "ollama"
+                else:
+                    continue
+                auth = ""
+                if parsed.username:
+                    auth = parsed.username
+                    if parsed.password:
+                        auth += f":{parsed.password}"
+                    auth += "@"
+                netloc = f"{auth}{alias_host}"
+                if parsed.port:
+                    netloc += f":{parsed.port}"
+                _append(urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)))
+
+            return urls
 
         def _call_ollama(use_stream: bool) -> str:
-            ollama_url = _resolve_ollama_url()
-            logger.warning(f"SLM 404 Fallback: {url} -> {ollama_url}")
             ollama_payload = {
                 "model": self.config.model,
                 "prompt": user_prompt,
@@ -287,34 +328,45 @@ class SLMClient:
                     "num_predict": max_tokens or self.config.max_tokens,
                 },
             }
+            errors: list[str] = []
 
-            if use_stream:
-                stream_payload = dict(ollama_payload)
-                stream_payload["stream"] = True
+            for ollama_url in _resolve_ollama_urls():
+                logger.warning("SLM fallback attempt: %s -> %s", url, ollama_url)
+
+                if use_stream:
+                    stream_payload = dict(ollama_payload)
+                    stream_payload["stream"] = True
+                    try:
+                        with _post_json(
+                            ollama_url,
+                            stream_payload,
+                            timeout=self._stream_timeout(),
+                            stream=True,
+                        ) as response:
+                            response.raise_for_status()
+                            streamed = self._consume_ollama_stream(response, self._stream_deadline())
+                        if streamed:
+                            logger.debug(f"SLM(ollama-stream) 응답 길이: {len(streamed)} chars")
+                            return streamed
+                        logger.warning("SLM(ollama-stream) 응답이 비어 non-stream으로 재시도합니다.")
+                    except requests.exceptions.Timeout as e:
+                        logger.warning(f"SLM(ollama-stream) 타임아웃, non-stream fallback: {e}")
+                        errors.append(f"{ollama_url} (stream timeout): {e}")
+                    except requests.exceptions.RequestException as e:
+                        logger.warning(f"SLM(ollama-stream) 호출 실패, non-stream fallback: {e}")
+                        errors.append(f"{ollama_url} (stream request): {e}")
+
                 try:
-                    with _post_json(
-                        ollama_url,
-                        stream_payload,
-                        timeout=self._stream_timeout(),
-                        stream=True,
-                    ) as response:
+                    with _post_json(ollama_url, ollama_payload) as response:
                         response.raise_for_status()
-                        streamed = self._consume_ollama_stream(response, self._stream_deadline())
-                    if streamed:
-                        logger.debug(f"SLM(ollama-stream) 응답 길이: {len(streamed)} chars")
-                        return streamed
-                    logger.warning("SLM(ollama-stream) 응답이 비어 non-stream으로 재시도합니다.")
-                except requests.exceptions.Timeout as e:
-                    logger.warning(f"SLM(ollama-stream) 타임아웃, non-stream fallback: {e}")
+                        data = response.json()
+                    content = str(data.get("response", "") or "")
+                    logger.debug(f"SLM(ollama) 응답 길이: {len(content)} chars")
+                    return content.strip()
                 except requests.exceptions.RequestException as e:
-                    logger.warning(f"SLM(ollama-stream) 호출 실패, non-stream fallback: {e}")
+                    errors.append(f"{ollama_url}: {e}")
 
-            with _post_json(ollama_url, ollama_payload) as response:
-                response.raise_for_status()
-                data = response.json()
-            content = str(data.get("response", "") or "")
-            logger.debug(f"SLM(ollama) 응답 길이: {len(content)} chars")
-            return content.strip()
+            raise requests.exceptions.RequestException("; ".join(errors) if errors else "ollama fallback url not available")
 
         try:
             if self.config.stream_enabled:
@@ -357,6 +409,10 @@ class SLMClient:
             return content.strip()
 
         except requests.exceptions.Timeout:
+            try:
+                return _call_ollama(use_stream=False)
+            except requests.exceptions.RequestException:
+                pass
             logger.error(
                 "SLM 타임아웃: request_timeout=%ss, stream_read_timeout=%ss, stream_hard_timeout=%ss",
                 self.config.timeout,
@@ -371,8 +427,11 @@ class SLMClient:
             )
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"SLM 호출 실패: {e}")
-            raise SLMError(f"SLM 호출 실패: {e}")
+            try:
+                return _call_ollama(use_stream=self.config.stream_enabled)
+            except requests.exceptions.RequestException as fallback_error:
+                logger.error(f"SLM 호출 실패: {e}")
+                raise SLMError(f"SLM 호출 실패: {e}; ollama fallback 실패: {fallback_error}")
 
         except (KeyError, IndexError) as e:
             logger.error(f"SLM 호출 실패: {e}")

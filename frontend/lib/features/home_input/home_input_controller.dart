@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import '../settings/settings_screen.dart'; 
+import '../settings/settings_screen.dart';
 import '../../shared/storage/local_storage.dart';
 import '../history/history_screen.dart';
 import '../bookmark/bookmark_screen.dart';
 import '../verify/presentation/result_screen.dart'; // 경로는 실제 위치에 맞게 조정
-
 
 /// 입력 모드 열거형
 enum InputMode { url, text }
@@ -46,21 +45,23 @@ class HomeInputController extends GetxController {
   // Coach 타겟 GlobalKey (Rect 측정용)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  
-final GlobalKey settingsKey = GlobalKey(debugLabel: 'coach_settings');
-final GlobalKey selectorKey = GlobalKey(debugLabel: 'coach_selector');
-final GlobalKey inputAreaKey = GlobalKey(debugLabel: 'coach_inputArea');
-final GlobalKey verifyButtonKey = GlobalKey(debugLabel: 'coach_verify');
+  final GlobalKey settingsKey = GlobalKey(debugLabel: 'coach_settings');
+  final GlobalKey selectorKey = GlobalKey(debugLabel: 'coach_selector');
+  final GlobalKey inputAreaKey = GlobalKey(debugLabel: 'coach_inputArea');
+  final GlobalKey inputClearButtonKey = GlobalKey(
+    debugLabel: 'coach_input_clear',
+  );
+  final GlobalKey verifyButtonKey = GlobalKey(debugLabel: 'coach_verify');
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Coach 타겟 Rect (측정된 위치/크기)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  
-final Rxn<Rect> settingsRect = Rxn<Rect>();
-final Rxn<Rect> selectorRect = Rxn<Rect>();
-final Rxn<Rect> inputRect = Rxn<Rect>();
-final Rxn<Rect> verifyRect = Rxn<Rect>();
+  final Rxn<Rect> settingsRect = Rxn<Rect>();
+  final Rxn<Rect> selectorRect = Rxn<Rect>();
+  final Rxn<Rect> inputRect = Rxn<Rect>();
+  final Rxn<Rect> inputClearRect = Rxn<Rect>();
+  final Rxn<Rect> verifyRect = Rxn<Rect>();
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 상수
@@ -166,6 +167,7 @@ final Rxn<Rect> verifyRect = Rxn<Rect>();
     if (showCoach.value) return;
     Get.to(() => const SettingsScreen());
   }
+
   void goHistory() => Get.to(() => const HistoryScreen());
   void goBookmark() => Get.to(() => const BookmarkScreen());
 
@@ -192,13 +194,14 @@ final Rxn<Rect> verifyRect = Rxn<Rect>();
   void captureCoachRects() {
     selectorRect.value = _measureRect(selectorKey);
     inputRect.value = _measureRect(inputAreaKey);
+    inputClearRect.value = _measureRect(inputClearButtonKey);
     verifyRect.value = _measureRect(verifyButtonKey);
   }
 
   /// GlobalKey로부터 Rect 측정
   // ───────────────────────────────────────────────────────────────────────────
 
-Rect? _measureRect(GlobalKey key) {
+  Rect? _measureRect(GlobalKey key) {
     final context = key.currentContext;
     if (context == null) return null;
 
@@ -215,9 +218,9 @@ Rect? _measureRect(GlobalKey key) {
     settingsRect.value = _measureRect(settingsKey);
     selectorRect.value = _measureRect(selectorKey);
     inputRect.value = _measureRect(inputAreaKey);
+    inputClearRect.value = _measureRect(inputClearButtonKey);
     verifyRect.value = _measureRect(verifyButtonKey);
   }
-
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 검증 관련 (Public)

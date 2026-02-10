@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:get/get.dart';
 import 'package:phosphor_flutter/phosphor_flutter.dart';
+import '../../shared/storage/local_storage.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -12,35 +14,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isDarkMode = false;
 
   @override
+  void initState() {
+    super.initState();
+    _isDarkMode = Get.isDarkMode;
+  }
+
+  Future<void> _toggleDarkMode() async {
+    final next = !_isDarkMode;
+    setState(() {
+      _isDarkMode = next;
+    });
+    Get.changeThemeMode(next ? ThemeMode.dark : ThemeMode.light);
+    await LocalStorage.setDarkMode(next);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final bg = isDark ? theme.colorScheme.surface : const Color(0xFFF7F7F7);
+
     return Scaffold(
-      backgroundColor: Color(0xFFF7F7F7),
+      backgroundColor: bg,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
+        backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
+        foregroundColor: isDark ? theme.colorScheme.onSurface : Colors.black,
         elevation: 0,
-        surfaceTintColor: Colors.white, // M3 색 섞임 방지
+        surfaceTintColor: isDark
+            ? theme.colorScheme.surface
+            : Colors.white, // M3 색 섞임 방지
         toolbarHeight: 56,
         shape: Border(
           bottom: BorderSide(
-            color: Colors.black.withOpacity(0.06),
+            color: isDark
+                ? theme.colorScheme.outlineVariant.withOpacity(0.6)
+                : Colors.black.withOpacity(0.06),
             width: 1,
           ),
         ),
         leading: IconButton(
           tooltip: '뒤로가기',
-          icon: const Icon(
-            PhosphorIconsRegular.caretLeft,
-            size: 32,
-          ),
+          icon: const Icon(PhosphorIconsRegular.caretLeft, size: 32),
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: const Text(
           'Settings',
-          style: TextStyle(
-            fontSize: 30,
-            fontWeight: FontWeight.w400,
-          ),
+          style: TextStyle(fontSize: 30, fontWeight: FontWeight.w400),
         ),
         centerTitle: true,
       ),
@@ -62,26 +81,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ? PhosphorIconsRegular.toggleRight
                         : PhosphorIconsRegular.toggleLeft,
                     size: 32,
-                    color: _isDarkMode ? Colors.blue : Colors.grey,
+                    color: isDark
+                        ? (_isDarkMode
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.outline)
+                        : (_isDarkMode ? Colors.blue : Colors.grey),
                   ),
-                  onPressed: () {
-                    setState(() {
-                      _isDarkMode = !_isDarkMode;
-                    });
-                    // TODO: 다크 모드 테마 적용
-                  },
+                  onPressed: _toggleDarkMode,
                 ),
               ),
-              const _Item(title: '글자 크기', trailing: Icon(PhosphorIconsRegular.caretRight, size: 20)),
-              const _Item(title: '언어', trailing: Icon(PhosphorIconsRegular.caretRight, size: 20)),
+              const _Item(
+                title: '글자 크기',
+                trailing: Icon(PhosphorIconsRegular.caretRight, size: 20),
+              ),
+              const _Item(
+                title: '언어',
+                trailing: Icon(PhosphorIconsRegular.caretRight, size: 20),
+              ),
             ],
           ),
           const SizedBox(height: 16),
           _Section(
             title: '데이터',
             children: const [
-              _Item(title: '캐시 삭제', trailing: Icon(PhosphorIconsRegular.caretRight, size: 20)),
-              _Item(title: '앱 정보', trailing: Icon(PhosphorIconsRegular.caretRight, size: 20)),
+              _Item(
+                title: '캐시 삭제',
+                trailing: Icon(PhosphorIconsRegular.caretRight, size: 20),
+              ),
+              _Item(
+                title: '앱 정보',
+                trailing: Icon(PhosphorIconsRegular.caretRight, size: 20),
+              ),
             ],
           ),
         ],

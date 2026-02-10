@@ -18,30 +18,35 @@ class BookmarkScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     Get.lazyPut<BookmarkController>(() => BookmarkController());
     final c = Get.find<BookmarkController>();
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final bg = isDark
+        ? theme.colorScheme.surfaceVariant
+        : const Color(0xFFF7F7F7);
 
-    final shell =
-        Get.isRegistered<ShellController>() ? Get.find<ShellController>() : null;
+    final shell = Get.isRegistered<ShellController>()
+        ? Get.find<ShellController>()
+        : null;
 
     return Scaffold(
-      backgroundColor: Color(0xFFF7F7F7),
+      backgroundColor: bg,
       appBar: AppBar(
-      backgroundColor: Colors.white,
-      foregroundColor: Colors.black,
-      elevation: 0,
-      surfaceTintColor: Colors.white, // M3 색 섞임 방지
-      toolbarHeight: 56,
-      shape: Border(
-        bottom: BorderSide(
-          color: Colors.black.withOpacity(0.06),
-          width: 1,
+        backgroundColor: isDark ? theme.colorScheme.surface : Colors.white,
+        foregroundColor: isDark ? theme.colorScheme.onSurface : Colors.black,
+        elevation: 0,
+        surfaceTintColor: isDark ? theme.colorScheme.surface : Colors.white,
+        toolbarHeight: 56,
+        shape: Border(
+          bottom: BorderSide(
+            color: isDark
+                ? theme.colorScheme.outlineVariant.withOpacity(0.6)
+                : Colors.black.withOpacity(0.06),
+            width: 1,
           ),
         ),
         leading: IconButton(
           tooltip: '뒤로가기',
-          icon: const Icon(
-            PhosphorIconsRegular.caretLeft,
-            size: 32,
-          ),
+          icon: const Icon(PhosphorIconsRegular.caretLeft, size: 32),
           onPressed: () {
             if (Navigator.of(context).canPop()) {
               Navigator.of(context).pop();
@@ -52,10 +57,7 @@ class BookmarkScreen extends StatelessWidget {
         ),
         title: const Text(
           'BookMark',
-          style: TextStyle(
-            fontSize: 30,
-            fontWeight: FontWeight.w400,
-          ),
+          style: TextStyle(fontSize: 30, fontWeight: FontWeight.w400),
         ),
         centerTitle: true,
         actions: [
@@ -108,6 +110,9 @@ class _SettingsIconButtonState extends State<SettingsIconButton> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTapDown: (_) => setState(() => _pressed = true),
@@ -121,7 +126,11 @@ class _SettingsIconButtonState extends State<SettingsIconButton> {
         child: Icon(
           _pressed ? PhosphorIconsFill.gear : PhosphorIconsRegular.gear,
           size: 32,
-          color: _pressed ? Colors.black : null,
+          color: isDark
+              ? (_pressed
+                    ? theme.colorScheme.onSurface
+                    : theme.colorScheme.onSurface.withOpacity(0.85))
+              : (_pressed ? Colors.black : null),
         ),
       ),
     );
@@ -134,8 +143,11 @@ class _EmptyBookmark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     return Container(
-      color: Color(0xFFF7F7F7),
+      color: isDark
+          ? theme.colorScheme.surfaceVariant
+          : const Color(0xFFF7F7F7),
       child: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),

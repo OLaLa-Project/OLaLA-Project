@@ -117,6 +117,75 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # ── Chat Backend (FastAPI) ────────────────────────
+  chat-db:
+    image: postgres:16-alpine
+    container_name: olala-chat-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: olala_chat
+      POSTGRES_USER: olala
+      POSTGRES_PASSWORD: olala
+    ports:
+      - "5433:5432"
+    volumes:
+      - chat-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U olala -d olala_chat"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    container_name: olala-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  fastapi:
+    build:
+      context: ./frontend/backend
+      dockerfile: Dockerfile
+    container_name: olala-fastapi
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://olala:olala@olala-chat-db:5432/olala_chat
+      REDIS_URL: redis://olala-redis:6379/0
+      CORS_ORIGINS: "*"
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      chat-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Flutter Web (Nginx + reverse proxy) ──────────
   web-flutter:
     build:
       context: ./frontend
@@ -128,8 +197,13 @@ services:
       - "3000:80"
     depends_on:
       - backend
+      - fastapi
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
+
+volumes:
+  chat-postgres-data:
+  redis-data:
