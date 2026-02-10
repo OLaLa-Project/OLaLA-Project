@@ -11,7 +11,11 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
-    shm_size: 1gb
+    shm_size: 4gb
+    deploy:
+      resources:
+        limits:
+          memory: 8gb
     volumes:
       # - ./storage/pgdata:/var/lib/postgresql/data
       # - /home/edu09/workspace/dev/OLaLA-Project/storage/pgdata:/var/lib/postgresql/data

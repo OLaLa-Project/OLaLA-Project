@@ -13,3 +13,5 @@ duckduckgo-search>=5.0.0
 langgraph>=0.0.40
 numpy>=1.26.0
 youtube-transcript-api>=0.6.2
+sentence-transformers>=2.3.0
+torch>=2.0.0

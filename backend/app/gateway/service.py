@@ -158,13 +158,24 @@ def _build_error_payload(error_msg: str, stage: str = "unknown") -> str:
 
 def run_pipeline(req: TruthCheckRequest) -> TruthCheckResponse:
     """동기식 파이프라인 실행."""
+    trace_id = str(uuid.uuid4())
+    
+    # Generate timestamp-based log directory (same as orchestrator)
+    import os
+    from app.core.settings import settings
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H-%M-%S")
+    log_dir = os.path.join(settings.log_dir, date_str, f"{time_str}_{trace_id[:8]}")
+    
     state: Dict[str, Any] = {
-        "trace_id": str(uuid.uuid4()),
+        "trace_id": trace_id,
         "input_type": req.input_type,
         "input_payload": req.input_payload,
         "user_request": req.user_request or "",
         "language": req.language or "ko",
         "search_mode": "auto",
+        "log_dir": log_dir,
         "stage_logs": [],
         "stage_outputs": {},
         "stage_full_outputs": {},
@@ -197,6 +208,15 @@ async def run_pipeline_stream(req: TruthCheckRequest):
         requested_thread_id,
         trace_id,
     )
+    
+    # Generate timestamp-based log directory (same as orchestrator)
+    import os
+    from app.core.settings import settings
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H-%M-%S")
+    log_dir = os.path.join(settings.log_dir, date_str, f"{time_str}_{trace_id[:8]}")
+    
     state: Dict[str, Any] = {
         "trace_id": trace_id,
         "checkpoint_thread_id": checkpoint_thread_id,
@@ -207,6 +227,7 @@ async def run_pipeline_stream(req: TruthCheckRequest):
         "user_request": req.user_request or "",
         "language": req.language or "ko",
         "search_mode": "auto",
+        "log_dir": log_dir,
         "stream_mode": True,
         "stream_fast_normalize": True,
         "stream_fast_querygen": True,

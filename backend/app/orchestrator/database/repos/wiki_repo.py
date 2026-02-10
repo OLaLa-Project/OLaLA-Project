@@ -124,24 +124,18 @@ class WikiRepository:
         """
         Find candidates by Full Text Search on chunks.
         Returns unique page_ids with titles.
-        Supports AND (&) operator for multiple keywords (Korean-friendly).
+        Supports space-separated words or '&' for AND logic (Korean-friendly).
         """
-        # Handle AND combination for Korean
-        if '&' in query:
-            # Split by & and create multiple plainto_tsquery calls
-            keywords = [k.strip() for k in query.split('&') if k.strip()]
-            # Build multiple tsquery conditions combined with &&
-            tsquery_parts = [f"plainto_tsquery('simple', '{k}')" for k in keywords]
-            tsquery_expr = ' && '.join(tsquery_parts)
-        else:
-            # Single query or space-separated words (convert to AND)
-            keywords = query.split()
-            if len(keywords) > 1:
-                tsquery_parts = [f"plainto_tsquery('simple', '{k}')" for k in keywords]
-                tsquery_expr = ' && '.join(tsquery_parts)
-            else:
-                tsquery_expr = f"plainto_tsquery('simple', '{query}')"
+        # Normalize: space-separated words to AND logic (&) for tsquery
+        parts = query.replace('&', ' ').split()
+        if not parts:
+            return []
             
+        # Build tsquery expression using bind parameters for safety
+        tsquery_expr = " && ".join([f"plainto_tsquery('simple', :q{i})" for i in range(len(parts))])
+        params = {f"q{i}": part for i, part in enumerate(parts)}
+        params["limit"] = limit
+        
         sql = text(f"""
             WITH q AS (
                 SELECT {tsquery_expr} AS tsq
@@ -161,8 +155,14 @@ class WikiRepository:
             JOIN public.wiki_pages p ON p.page_id = m.page_id
             LIMIT :limit
         """)
-        rows = self.db.execute(sql, {"limit": limit}).all()
-        return [(int(r[0]), str(r[1])) for r in rows]
+        
+        try:
+            rows = self.db.execute(sql, params).all()
+            return [(int(r[0]), str(r[1])) for r in rows]
+        except Exception as e:
+            # logger.error is not defined in this file, use print or just return empty
+            print(f"FTS Search Failed: {e}")
+            return []
 
     def calculate_fts_scores_for_chunks(self, chunk_ids: Sequence[int], query: str) -> Dict[int, float]:
         """
@@ -174,7 +174,7 @@ class WikiRepository:
             
         sql = text("""
             WITH q AS (
-                SELECT plainto_tsquery('simple', (:q)::text) AS tsq
+                SELECT plainto_tsquery('simple', :q) AS tsq
             )
             SELECT
                 c.chunk_id,
@@ -182,6 +182,7 @@ class WikiRepository:
             FROM public.wiki_chunks c
             CROSS JOIN q
             WHERE c.chunk_id = ANY(:cids)
+              AND to_tsvector('simple', c.content) @@ q.tsq
         """).bindparams(bindparam("cids", type_=ARRAY(BigInteger)))
         
         rows = self.db.execute(sql, {"cids": list(chunk_ids), "q": query}).all()
@@ -191,13 +192,19 @@ class WikiRepository:
     def vector_search_candidates(self, qvec_literal: str, limit: int = 50) -> List[Tuple[int, str]]:
         """
         Get page candidates solely by vector similarity.
+        Optimized to use HNSW index on chunks first.
         """
+        # 1. Get top chunks using index (fetch more to ensure enough unique pages)
         sql = text("""
-            SELECT p.page_id, p.title
-            FROM public.wiki_chunks c
+            WITH top_chunks AS (
+                SELECT page_id
+                FROM public.wiki_chunks
+                ORDER BY embedding <=> (:qvec)::vector
+                LIMIT :limit * 4
+            )
+            SELECT DISTINCT p.page_id, p.title
+            FROM top_chunks c
             JOIN public.wiki_pages p ON p.page_id = c.page_id
-            GROUP BY p.page_id, p.title
-            ORDER BY MIN(c.embedding <=> (:qvec)::vector) ASC
             LIMIT :limit
         """)
         rows = self.db.execute(sql, {"qvec": qvec_literal, "limit": limit}).all()
@@ -264,6 +271,9 @@ class WikiRepository:
         Fetch chunks directly using FTS when vector search fails.
         """
         sql = text("""
+            WITH q AS (
+                SELECT plainto_tsquery('simple', :q) AS tsq
+            )
             SELECT
               p.title,
               c.page_id,
@@ -271,10 +281,11 @@ class WikiRepository:
               c.chunk_idx,
               c.content,
               0.0 AS dist,
-              ts_rank_cd(to_tsvector('simple', c.content), plainto_tsquery('simple', :q)) as rank
+              ts_rank_cd(to_tsvector('simple', c.content), q.tsq) as rank
             FROM public.wiki_chunks c
             JOIN public.wiki_pages p ON p.page_id = c.page_id
-            WHERE to_tsvector('simple', c.content) @@ plainto_tsquery('simple', :q)
+            CROSS JOIN q
+            WHERE to_tsvector('simple', c.content) @@ q.tsq
             ORDER BY rank DESC
             LIMIT :limit
         """)

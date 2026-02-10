@@ -4,6 +4,9 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any, Literal, cast
 from datetime import datetime, timezone
+import os
+
+from app.core.settings import settings
 
 from app.core.async_utils import run_async_in_sync
 from app.core.schemas import Citation, ModelInfo, TruthCheckRequest, TruthCheckResponse
@@ -32,6 +35,14 @@ def _init_state(req: TruthCheckRequest, trace_id: str | None = None) -> GraphSta
         "stage_full_outputs": {},
         "include_full_outputs": bool(req.include_full_outputs),
     }
+
+    # Generate timestamp-based log directory
+    # Format: logs/YYYY-MM-DD/HH-MM-SS_traceid
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H-%M-%S")
+    log_dir = os.path.join(settings.log_dir, date_str, f"{time_str}_{resolved_trace_id[:8]}")
+    state["log_dir"] = log_dir
 
     if isinstance(req.stage_state, dict):
         cast(dict[str, Any], state).update(req.stage_state)

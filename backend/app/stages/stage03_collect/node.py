@@ -57,11 +57,11 @@ async def _search_wiki(query: str, search_mode: str) -> List[Dict[str, Any]]:
                 return retrieve_wiki_hits(
                     db=db,
                     question=query,
-                    top_k=2,         
+                    top_k=10,  # Increased from 3 to 10 for better coverage
                     window=2,        
-                    page_limit=2,
+                    page_limit=10,  # Increased from 3 to 10
                     embed_missing=True,
-                    search_mode=search_mode
+                    search_mode=search_mode  # Use per-query mode
                 )
         
         # Offload sync DB work to thread
@@ -109,7 +109,7 @@ async def _search_naver(
         "X-Naver-Client-Id": client_id,
         "X-Naver-Client-Secret": client_secret
     }
-    params: Dict[str, str | int] = {"query": safe_query, "display": 10, "sort": "sim"}
+    params: Dict[str, str | int] = {"query": safe_query, "display": 20, "sort": "sim"}
     request_timeout = _api_timeout_seconds()
     max_attempts = _api_retry_attempts()
     sem = limiter or asyncio.Semaphore(max(1, int(settings.naver_max_concurrency)))
@@ -203,7 +203,7 @@ async def _search_duckduckgo(
         try:
             def _sync_ddg():
                 with DDGS() as ddgs:
-                    return list(ddgs.text(query, max_results=10))
+                    return list(ddgs.text(query, max_results=50))
 
             async with sem:
                 ddg_results = await asyncio.wait_for(
@@ -337,7 +337,6 @@ def _normalize_wiki_query(text: str) -> List[str]:
 async def run_wiki_async(state: dict) -> dict:
     """Execute Only Wiki Search (async)."""
     search_queries = _extract_queries(state)
-    search_mode = state.get("search_mode", "lexical")
 
     tasks = []
     wiki_inputs: Dict[str, str] = {}
@@ -351,18 +350,26 @@ async def run_wiki_async(state: dict) -> dict:
         if not isinstance(q, str) and hasattr(qtype, "value"):
             qtype = qtype.value
         qtype = str(qtype).lower().strip()
-        q_search_mode = search_mode if isinstance(q, str) else q.get("search_mode", search_mode)
+        # Extract search_mode from query (default to "auto" if not specified)
+        q_search_mode = "auto" if isinstance(q, str) else q.get("search_mode", "auto")
         
-        print(f"[DEBUG Wiki Search] Processing query: type={qtype}, text='{text}'")
-        logger.info(f"[Wiki Search] Processing query: type={qtype}, text='{text}'")
+        print(f"[DEBUG Wiki Search] Processing query: type={qtype}, text='{text}', mode={q_search_mode}")
+        logger.info(f"[Wiki Search] Processing query: type={qtype}, text='{text}', mode={q_search_mode}")
         
         if not text:
             continue
 
         # Only process queries explicitly marked as "wiki" type
         if qtype == "wiki":
-            normalized = _normalize_wiki_query(text)
-            print(f"[DEBUG Wiki Search] Normalized '{text}' → {normalized}")
+            # Vector mode: Use raw text for semantic search (preserve sentence structure)
+            if q_search_mode == "vector":
+                normalized = [text.strip()]
+                print(f"[DEBUG Wiki Search] Vector mode - using raw text: '{text}'")
+            else:
+                # Lexical/Auto mode: Normalize for keyword matching
+                normalized = _normalize_wiki_query(text)
+                print(f"[DEBUG Wiki Search] Normalized '{text}' → {normalized}")
+            
             logger.info(f"[Wiki Search] Normalized '{text}' → {normalized}")
             for term in normalized:
                 if term and term not in wiki_inputs:
@@ -393,7 +400,12 @@ async def run_wiki_async(state: dict) -> dict:
     
     flat = list(unique_map.values())
 
-    logger.info(f"Stage 3 (Wiki) Complete. Found {len(flat)}")
+    logger.info(f"Stage 3 (Wiki) Found {len(flat)} candidates total")
+    
+    # Limit total candidates to 3
+    flat = flat[:3]
+    
+    logger.info(f"Stage 3 (Wiki) Complete. Returning {len(flat)} candidates")
     return {"wiki_candidates": flat}
 
 

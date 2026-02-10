@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     naver_client_id: str = ""
     naver_client_secret: str = ""
-    wiki_embeddings_ready: bool = False
+    wiki_embeddings_ready: bool = True
 
     checkpoint_enabled: bool = True
     checkpoint_backend: str = "postgres"

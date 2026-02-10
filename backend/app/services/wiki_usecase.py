@@ -157,10 +157,17 @@ def retrieve_wiki_hits(
     repo = WikiRepository(db)
     search_mode = _resolve_search_mode(search_mode)
     q_norm = normalize_question_to_query(question)
-    keywords = extract_keywords(q_norm)
+    
+    # CRITICAL: For vector search, use the FULL query text as-is.
+    # Do NOT split into keywords for vector mode.
+    # Only extract keywords for lexical/FTS matching.
+    if search_mode == "vector":
+        keywords = []  # No keyword splitting for pure vector search
+    else:
+        keywords = extract_keywords(q_norm)
     
     # Prepare Vector (Lazy)
-    print(f"DEBUG: retrieve_wiki_hits mode={search_mode}, keywords={keywords}")
+    print(f"DEBUG: retrieve_wiki_hits mode={search_mode}, keywords={keywords if keywords else '[FULL_QUERY_PRESERVED]'}")
     q_vec_lit = None
     if search_mode in ["auto", "vector"]:
         try:

@@ -105,6 +105,7 @@ class GraphState(TypedDict, total=False):
     search_mode: str
     normalize_mode: Literal["llm", "basic"]
     include_full_outputs: bool
+    log_dir: str
 
     claim_text: str
     canonical_evidence: dict[str, Any]

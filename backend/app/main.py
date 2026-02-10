@@ -40,3 +40,29 @@ app.include_router(truth_router)
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    
+    # Model warm-up to prevent first-request timeouts
+    import logging
+    from app.stages._shared.slm_client import call_slm1
+    from app.orchestrator.embedding.client import embed_texts
+    
+    logger = logging.getLogger(__name__)
+    
+    # Warm up SLM (Ollama)
+    try:
+        logger.info("🔥 Warming up SLM model...")
+        call_slm1(
+            system_prompt="You are a helpful assistant.",
+            user_prompt="Hello",
+        )
+        logger.info("✅ SLM model ready")
+    except Exception as e:
+        logger.warning(f"⚠️  SLM warm-up failed (will retry on first request): {e}")
+    
+    # Warm up Embedding model
+    try:
+        logger.info("🔥 Warming up embedding model...")
+        embed_texts(["테스트"])
+        logger.info("✅ Embedding model ready")
+    except Exception as e:
+        logger.warning(f"⚠️  Embedding warm-up failed (will retry on first request): {e}")

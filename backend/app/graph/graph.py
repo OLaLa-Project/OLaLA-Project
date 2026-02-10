@@ -106,24 +106,12 @@ def _build_queries(state: GraphState) -> GraphState:
 
         if final_type == "wiki":
             wiki_mode = _resolve_wiki_search_mode(state)
-            if bundle_terms and not used_bundle_terms:
-                for term in bundle_terms:
-                    key = (final_type, term, wiki_mode)
-                    if not term or key in seen:
-                        continue
-                    seen.add(key)
-                    search_queries.append(
-                        {
-                            "type": "wiki",
-                            "text": term,
-                            "search_mode": cast(Any, wiki_mode),
-                            "meta": {"original": text, "source": "keyword_bundles"},
-                        }
-                    )
-                used_bundle_terms = True
-                continue
-
-            normalized_terms = _normalize_wiki_query(text)[:2]
+            # [MODIFIED] ALWAYS use Stage 2 query text exactly as-is.
+            # Do NOT split, tokenize, or normalize wiki queries.
+            # Stage 2 generates optimized queries (e.g., "AH-1S 코브라 헬기의 운용 기간과 노후화")
+            # and we must preserve them completely for accurate search.
+            normalized_terms = [text.strip()]
+            
             for term in normalized_terms:
                 key = (final_type, term, wiki_mode)
                 if not term or key in seen:

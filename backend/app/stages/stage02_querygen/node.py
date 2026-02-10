@@ -192,7 +192,7 @@ def postprocess_queries(
     claim: str,
 ) -> Dict[str, Any]:
     """
-    LLM 출력 후처리: 빈 text 필드 보완, 기본 구조 보장.
+    LLM 출력 후처리: 빈 text 필드 보완, 기본 구조 보장, search_mode 지능형 할당.
     """
     core_fact = parsed.get("core_fact") or claim
 
@@ -203,6 +203,7 @@ def postprocess_queries(
     for q in raw_variants:
         text = q.get("text", "").strip()
         qtype = q.get("type", "direct")
+        search_mode = q.get("search_mode", None)  # LLM이 지정한 search_mode 보존
         
         # 1. Text fallback
         if not text:
@@ -215,23 +216,16 @@ def postprocess_queries(
             else:
                 text = core_fact
         
-        # 2. Wiki 쿼리 검증 및 정제 (문제 2 해결)
+        # 2. Wiki 쿼리 처리: 무조건 Vector 검색으로 고정 & 단일 쿼리 유지
         if qtype in ["wiki", "WIKI"]:
-            # 2-1. 너무 긴 쿼리 (복합어 가능성) - 경고 및 첫 단어만 추출
-            if len(text) > 15:
-                logger.warning(f"Wiki query seems compound: '{text}' - using first term")
-                # 첫 번째 명사만 추출 (공백 기준)
-                first_term = text.split()[0] if text.split() else text
-                text = first_term
-            
-            # 2-2. 서술형 감지 ("~의", "~에 대한", "~관련" 등)
-            if re.search(r"(의|에\s*대한|관련|에\s*관한)", text):
-                logger.warning(f"Wiki query is descriptive: '{text}' - cleaning")
-                # 조사 및 서술어 제거
-                text = re.sub(r"(의|에\s*대한|관련|에\s*관한).*", "", text).strip()
+            # 이미 처리된 wiki 쿼리가 있다면 건너뜀 (단일 쿼리 정책)
+            if any(v["type"] == "wiki" for v in valid_variants):
+                continue
+
+            # LLM이 명시한 search_mode가 있어도 무시하고 무조건 vector 사용
+            search_mode = "vector"
         
         # 3. Type normalization
-        # Map known types to SearchQueryType values
         if qtype in ["wiki", "WIKI"]:
             final_type = "wiki"
         elif qtype in ["news", "NEWS"]:
@@ -239,13 +233,21 @@ def postprocess_queries(
         elif qtype in ["verification", "contradictory"]:
             final_type = "verification"
         else:
-            final_type = "direct" # default
+            final_type = "direct"
+        
+        # search_mode가 없는 경우 기본값 설정
+        if not search_mode:
+            search_mode = "auto"  # Default for non-wiki queries
             
-        valid_variants.append({"text": text, "type": final_type})
+        valid_variants.append({
+            "text": text,
+            "type": final_type,
+            "search_mode": search_mode
+        })
 
     # 최소 1개 쿼리 보장
     if not valid_variants:
-        valid_variants = [{"type": "direct", "text": core_fact}]
+        valid_variants = [{"type": "direct", "text": core_fact, "search_mode": "auto"}]
 
     return {
         "query_variants": valid_variants,

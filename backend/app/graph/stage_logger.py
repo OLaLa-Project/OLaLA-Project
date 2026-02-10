@@ -76,10 +76,17 @@ def prepare_stage_output(output: Dict[str, Any]) -> Dict[str, Any]:
 
 def _write_log(entry: Dict[str, Any]) -> None:
     try:
-        _ensure_dir()
-        trace_id = entry.get("trace_id", "unknown")
-        stage = entry.get("stage", "stage")
-        path = os.path.join(_PIPELINE_DIR, f"{trace_id}_{stage}.json")
+        log_dir = entry.get("log_dir")
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+            stage = entry.get("stage", "stage")
+            path = os.path.join(log_dir, f"{stage}.json")
+        else:
+            _ensure_dir()
+            trace_id = entry.get("trace_id", "unknown")
+            stage = entry.get("stage", "stage")
+            path = os.path.join(_PIPELINE_DIR, f"{trace_id}_{stage}.json")
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(entry, f, ensure_ascii=False, indent=2)
     except Exception:
@@ -102,8 +109,12 @@ def _make_entry(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "input_keys": list(state.keys()),
     }
+    if "log_dir" in state:
+        entry["log_dir"] = state["log_dir"]
     if output is not None:
         entry["output_summary"] = _summarize_output(output)
+        if state.get("include_full_outputs"):
+            entry["output"] = output
     if error:
         entry["error"] = error
     if duration_ms is not None:
